@@ -1,5 +1,13 @@
 #include "WindowsVRMetalFXUpscaler.h"
 
+#include <TargetConditionals.h>
+#if TARGET_OS_VISION
+extern "C" void *wvr_metalfx_create_v1(void *) { return nullptr; }
+extern "C" void wvr_metalfx_destroy_v1(void *) {}
+extern "C" void wvr_metalfx_reset_v1(void *) {}
+extern "C" int32_t wvr_metalfx_dispatch_v1(void *, const WVRMetalFXDispatchV1 *) { return -1; }
+extern "C" int32_t wvr_metalfx_copy_stats_v1(void *, char *, uint32_t) { return 0; }
+#else
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include <simd/simd.h>
@@ -544,3 +552,5 @@ extern "C" int32_t wvr_metalfx_copy_stats_v1(void *ctxPtr, char *buf, uint32_t c
   }
   return int32_t(std::min<uint32_t>(uint32_t(n), cap - 1u));
 }
+
+#endif // !TARGET_OS_VISION

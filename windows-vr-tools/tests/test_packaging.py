@@ -260,6 +260,35 @@ class ArchitectureTests(unittest.TestCase):
         self.image(metadata_version=1, metadata_va=0x180002000)
         self.assertFalse(stage.is_arm64ec_pe(self.path))
 
+    def test_game_services_require_arm64ec_even_when_arm64_copy_exists(self):
+        root = Path(self.scratch.name) / "runtime"
+        for directory in ("nls", "legal", "arm64ec-windows", "aarch64-windows"):
+            (root / directory).mkdir(parents=True)
+        for directory in ("nls", "legal"):
+            (root / directory / "fixture").write_bytes(b"fixture")
+        self.image(machine=0xA641)
+        arm64ec = self.path.read_bytes()
+        for name in stage.REQUIRED_BUILTINS | stage.ARM64EC_REQUIRED_BUILTINS | {"d3d11.dll", "winemetal.dll"}:
+            (root / "arm64ec-windows" / name).write_bytes(arm64ec)
+        self.image(machine=0xAA64)
+        arm64 = self.path.read_bytes()
+        services = {"dwrite.dll", "uiautomationcore.dll", "oleacc.dll", "uxtheme.dll",
+                    "msimg32.dll", "schannel.dll", "dsound.dll", "dcomp.dll", "ktmw32.dll", "mscoree.dll"}
+        for name in stage.REQUIRED_BUILTINS | services:
+            (root / "aarch64-windows" / name).write_bytes(arm64)
+        stage.validate_wine_resources(root)
+        for name in sorted(services):
+            with self.subTest(module=name):
+                path = root / "arm64ec-windows" / name
+                path.unlink()
+                with self.assertRaisesRegex(SystemExit, name.replace(".", r"\.")):
+                    stage.validate_wine_resources(root)
+                path.write_bytes(arm64)
+                with self.assertRaisesRegex(SystemExit, "requires ARM64EC PE"):
+                    stage.validate_wine_resources(root)
+                path.write_bytes(arm64ec)
+        stage.validate_wine_resources(root)
+
 
 if __name__ == "__main__":
     unittest.main()

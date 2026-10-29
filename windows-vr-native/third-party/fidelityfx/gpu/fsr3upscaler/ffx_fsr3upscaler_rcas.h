@@ -153,7 +153,10 @@ void WriteUpscaledOutput(FFX_MIN16_U2 iPxHrPos, FfxFloat32x3 fUpscaledColor)
     void CurrFilter(FFX_MIN16_U2 pos)
     {
         FfxFloat32x3 c;
-        FsrRcasF(c.r, c.g, c.b, pos, RCASConfig());
+        // Metal cannot bind an out-reference to a vector component.
+        FfxFloat32 red, green, blue;
+        FsrRcasF(red, green, blue, pos, RCASConfig());
+        c = FfxFloat32x3(red, green, blue);
 
         c /= Exposure();
 

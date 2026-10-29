@@ -31,6 +31,16 @@ As of 2026-10-14, on one headset (M2 Vision Pro, visionOS 27.2):
 - Everything else, other games, other headsets, M5 and sustained play, is untested. Treat it as a research
   build, not a release.
 
+## M5 Vision Pro
+
+Capability-based presets, cadence-aware synthesis, performance diagnostics and an
+opt-in Metal 4 tensor reconstruction path are implemented. Automatic retains the
+1888×1792 baseline; M5 quality is an experimental per-game preset. No M5 game FPS
+improvement or sustained-play result has been established. See the
+[M5 implementation and validation guide](docs/windows-vr-m5.md). A signed Release
+build was installed on M5 on October 27, 2026; see the
+[device-build handoff](docs/windows-vr-device-build.md).
+
 ## How it works
 
 ```mermaid
@@ -111,8 +121,9 @@ Headset-confirmed unless marked otherwise. The full engineering record is in `do
   of what the compositor received and drew), a 60 s startup-stall watchdog with all-thread dumps, and an OpenXR
   call trace. They are on while `WVRDiagnostics` is true in the app's Info.plist and should be turned off for a
   release.
-- **Not reproducible from source:** the prebuilt runtime plugin carries two binary patches (a 640 MB JIT pool and
-  a Mach-port registration stub). They have to be ported into source patches before a clean rebuild.
+- **Source runtime:** the source-built app now compiles, signs and installs on M5, including the 640 MiB JIT-pool
+  patch. Equivalent game/JIT behavior to the earlier prebuilt M2 runtime, which also used a Mach-port
+  registration stub, remains unverified.
 
 The full engineering record is in `docs/windows-vr-*.md` (status, graphics, input, freeze, performance, packaging,
 Steam, simulator). The patch files are numbered in `windows-vr-openxr/patches/` and

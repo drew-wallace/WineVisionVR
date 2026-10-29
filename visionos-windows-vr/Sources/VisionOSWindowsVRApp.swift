@@ -13,8 +13,8 @@ struct VisionOSWindowsVRApp: App {
         // Before anything calls the compositor bridge, which reads this switch once.
         if LaunchDiagnostics.enabled {
             setenv("WVR_TRACE_BRIDGE", "1", 1)
-            wvr_metal_gpu_statistics_install()
         }
+        if LaunchDiagnostics.performanceEnabled { wvr_metal_gpu_statistics_install() }
     }
 
     var body: some Scene {

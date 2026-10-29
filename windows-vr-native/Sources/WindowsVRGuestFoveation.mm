@@ -759,9 +759,11 @@ id<MTLRenderPipelineState> pipelineFor(id<MTLDevice> device,
 // thread serves the short-lived preload and resolve encoders. Every attachment
 // and the rate map are reset so no state leaks between uses.
 static MTLRenderPassDescriptor *scratchDescriptor() {
-  static thread_local __strong MTLRenderPassDescriptor *descriptor = nil;
-  if (!descriptor)
-    descriptor = [MTLRenderPassDescriptor new];
+  // ARC objects cannot be bare thread_local variables. A C++ owner supplies
+  // the destructor and preserves the same bounded, per-thread descriptor reuse.
+  struct Owner { __strong MTLRenderPassDescriptor *value = [MTLRenderPassDescriptor new]; };
+  static thread_local Owner owner;
+  MTLRenderPassDescriptor *descriptor = owner.value;
   descriptor.rasterizationRateMap = nil;
   descriptor.colorAttachments[0].texture = nil;
   descriptor.depthAttachment.texture = nil;

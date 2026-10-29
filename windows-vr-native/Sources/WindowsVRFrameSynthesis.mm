@@ -291,6 +291,7 @@ struct Context {
   unsigned latest = 0;
   bool ready = false;
   uint32_t mode;
+  uint32_t lastDisplayKind = 0;
   std::mutex mutex;
   std::shared_ptr<Stats> stats = std::make_shared<Stats>();
   WVRNeuralContext *neural = nullptr;
@@ -368,6 +369,7 @@ void dispatch(Context &c, id<MTLComputeCommandEncoder> e, unsigned pipeline,
   [e memoryBarrierWithScope:MTLBarrierScopeTextures];
 }
 void reset(Context &c) {
+  c.lastDisplayKind = 0;
   c.stats->epoch++;
   c.stats->coverageFrameID = 0;
   for (unsigned i = 0; i < 2; i++) {
@@ -823,6 +825,7 @@ static int32_t encode(void *ctx, uint64_t timestamp, uint32_t lw, uint32_t lh,
       return -1;
     auto &c = *static_cast<Context *>(ctx);
     std::lock_guard lock(c.mutex);
+    c.lastDisplayKind = 0;
     auto commands = (__bridge id<MTLCommandBuffer>)buffer;
     if (!c.ready || commands.device != c.device ||
         commands.commandQueue != c.queue || !commands.retainedReferences)
@@ -976,7 +979,9 @@ static int32_t encode(void *ctx, uint64_t timestamp, uint32_t lw, uint32_t lh,
 
       if (views)
         c.stats->trackedPoseJobs++;
-      c.stats->generated++;
+      c.lastDisplayKind = extrapolate && timestamp > now.time && now.interval ? 2u : 1u;
+      if (c.lastDisplayKind == 2) c.stats->generated++;
+      else c.stats->spatial++;
       return 0;
     }
     bool history = c.mode == 2 && previous.id && previous.time < now.time;
@@ -1153,6 +1158,7 @@ static int32_t encode(void *ctx, uint64_t timestamp, uint32_t lw, uint32_t lh,
       c.stats->trackedPoseJobs++;
     if (temporal)
       c.stats->temporal++;
+    c.lastDisplayKind = horizon > 0 ? 2u : 1u;
     if (horizon > 0)
       c.stats->generated++;
     else
@@ -1288,4 +1294,11 @@ extern "C" int32_t wvr_synthesis_copy_stats_v1(void *ctx, char *buffer,
     }
   }
   return 1;
+}
+
+extern "C" uint32_t wvr_synthesis_last_display_kind_v1(void *context) {
+  if (!context) return 0;
+  auto &c = *static_cast<Context *>(context);
+  std::lock_guard lock(c.mutex);
+  return c.lastDisplayKind;
 }

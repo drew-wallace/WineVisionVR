@@ -1,0 +1,47 @@
+--- a/wine/dlls/ntdll/loader.c
++++ b/wine/dlls/ntdll/loader.c
+@@ -3921,6 +3921,19 @@
+     return FALSE;
+ }
+ 
++#ifdef __arm64ec__
++/* The mixed-architecture farm aliases the bootstrap ntdll. Loading its bytes
++ * a second time creates uninitialized loader/version state. Reuse only that
++ * process's bootstrap module; do not merge arbitrary DLLs by basename. */
++static WINE_MODREF *madeira_bootstrap_ntdll_for_fallback( const WCHAR *base )
++{
++    WINE_MODREF *wm;
++    if (wcsicmp( base, L"ntdll.dll" ) && wcsicmp( base, L"ntdll" )) return NULL;
++    wm = find_basename_module( L"ntdll.dll" );
++    return wm && node_ntdll && wm->ldr.DdagNode == node_ntdll ? wm : NULL;
++}
++#endif
++
+ /***********************************************************************
+  *	find_dll_file
+  *
+@@ -4000,6 +4013,14 @@
+         UNICODE_STRING alt;
+         const WCHAR *base = libname, *p;
+         for (p = libname; *p; p++) if (*p == '\\' || *p == '/') base = p + 1;
++        if ((*pwm = madeira_bootstrap_ntdll_for_fallback( base )))
++        {
++            if (nt_name->Buffer) RtlFreeUnicodeString( nt_name );
++            status = RtlCreateUnicodeString( nt_name, (*pwm)->ldr.FullDllName.Buffer )
++                     ? STATUS_SUCCESS : STATUS_NO_MEMORY;
++            TRACE( "mixed-arch bootstrap ntdll reused for %s\n", debugstr_w(libname) );
++            goto done;
++        }
+         if (wcslen( base ) + ARRAY_SIZE( sysx64W ) + 4 < MAX_PATH)
+         {
+             wcscpy( buf, sysx64W );
+@@ -4020,6 +4041,9 @@
+     }
+ #endif
+ 
++#ifdef __arm64ec__
++done:
++#endif
+     RtlFreeHeap( GetProcessHeap(), 0, fullname );
+     if (wow64_old_value) RtlWow64EnableFsRedirectionEx( 1, &wow64_old_value );
+     return status;

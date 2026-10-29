@@ -1,0 +1,67 @@
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -2734,16 +2734,56 @@
+   return STATUS_SUCCESS;
+ }
+ #else
+-static NTSTATUS
+-_WMTGetDisplayDescription(void *obj) { (void)obj; return STATUS_NOT_SUPPORTED; }
+-static NTSTATUS
+-_MetalLayer_getEDRValue(void *obj) { (void)obj; return STATUS_NOT_SUPPORTED; }
+-static NTSTATUS
+-_WMTQueryDisplaySetting(void *obj) { (void)obj; return STATUS_NOT_SUPPORTED; }
++/* Mobile layers have no desktop display override. Guest thunks copy these
++ * outputs even when a unix call returns failure, so every query must establish
++ * a complete, deterministic SDR result rather than expose bridge stack bytes. */
++static NTSTATUS
++_WMTGetDisplayDescription(void *obj) {
++  struct unixcall_generic_obj_ptr_noret *params = obj;
++  struct WMTDisplayDescription *desc = params->arg.ptr;
++  *desc = (struct WMTDisplayDescription){
++      .red_primaries = {0.64f, 0.33f},
++      .blue_primaries = {0.15f, 0.06f},
++      .green_primaries = {0.30f, 0.60f},
++      .white_points = {0.3127f, 0.3290f},
++      .maximum_edr_color_component_value = 1.0f,
++      .maximum_potential_edr_color_component_value = 1.0f,
++      .maximum_reference_edr_color_component_value = 0.0f,
++  };
++  return STATUS_SUCCESS;
++}
++
++static NTSTATUS
++_MetalLayer_getEDRValue(void *obj) {
++  struct unixcall_generic_obj_ptr_noret *params = obj;
++  struct WMTEDRValue *value = params->arg.ptr;
++  *value = (struct WMTEDRValue){1.0f, 1.0f};
++  return STATUS_SUCCESS;
++}
++
++static NTSTATUS
++_WMTQueryDisplaySetting(void *obj) {
++  struct unixcall_query_display_setting *params = obj;
++  params->ret = false;
++  params->colorspace = WMTColorSpaceSRGB;
++  if (params->hdr_metadata.ptr)
++    memset(params->hdr_metadata.ptr, 0, sizeof(struct WMTHDRMetadata));
++  return STATUS_SUCCESS;
++}
++
+ static NTSTATUS
+ _WMTUpdateDisplaySetting(void *obj) { (void)obj; return STATUS_NOT_SUPPORTED; }
+-static NTSTATUS
+-_WMTQueryDisplaySettingForLayer(void *obj) { (void)obj; return STATUS_NOT_SUPPORTED; }
++
++static NTSTATUS
++_WMTQueryDisplaySettingForLayer(void *obj) {
++  struct unixcall_query_display_setting_for_layer *params = obj;
++  params->version = 0;
++  params->colorspace = WMTColorSpaceSRGB;
++  params->edr_value = (struct WMTEDRValue){1.0f, 1.0f};
++  if (params->hdr_metadata.ptr)
++    memset(params->hdr_metadata.ptr, 0, sizeof(struct WMTHDRMetadata));
++  return STATUS_SUCCESS;
++}
+ #endif
+ 
+ static NTSTATUS

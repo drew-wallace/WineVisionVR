@@ -10,8 +10,11 @@ xcrun --sdk macosx clang++ -std=c++20 -O2 -fobjc-arc \
  "$ROOT/windows-vr-native/Sources/WindowsVRGuestFoveation.mm" \
  "$ROOT/windows-vr-native/Sources/WindowsVRFrameSynthesis.mm" \
  "$ROOT/windows-vr-native/Sources/WindowsVRNeuralReconstruction.mm" \
+ "$ROOT/windows-vr-native/Sources/WindowsVRFsr3Upscaler.mm" \
+ "$ROOT/windows-vr-native/Sources/WindowsVRMetalFXUpscaler.mm" \
  "$ROOT/windows-vr-native/Tests/FrameSynthesisProbe.mm" \
  -framework Foundation -framework Metal -framework QuartzCore -framework CoreFoundation \
+ -framework CoreML -framework CoreVideo -framework IOSurface -framework MetalFX \
  -o "$BUILD/frame-synthesis-probe"
 "$BUILD/frame-synthesis-probe"
 xcrun --sdk macosx clang++ -std=c++20 -fsanitize=undefined,bounds \

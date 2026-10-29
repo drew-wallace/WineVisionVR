@@ -1,0 +1,45 @@
+--- a/src/dxmt/dxmt_presenter.cpp
++++ b/src/dxmt/dxmt_presenter.cpp
+@@ -4,6 +4,9 @@
+ #include "dxmt_format.hpp"
+ #include "dxmt_presenter.hpp"
+ #include "util_likely.hpp"
++#include "util_env.hpp"
++#include "log/log.hpp"
++#include "dxmt_present_format.hpp"
+ 
+ 
+ namespace dxmt {
+@@ -115,6 +118,15 @@
+   }
+ 
+   auto final_colorspace = display_setting_version_ > 0 ? display_colorspace_ : colorspace_;
++  // Keep the guest backbuffer and shader color interpretation unchanged.
++  // This explicit SDR comparison changes only the final drawable/PSO format.
++  static const bool sdr_bgra8 = env::getEnvVar("DXMT_SDR_PRESENT_BGRA8") == "1";
++  auto output_format = SelectSDRPresentationFormat(Forget_sRGB(source_format_), final_colorspace, sdr_bgra8);
++  if (layer_props_.pixel_format != output_format) {
++    WARN("SDR presentation format ", layer_props_.pixel_format, " -> ", output_format);
++    layer_props_.pixel_format = output_format;
++    pso_valid.clear();
++  }
+   auto is_hdr = WMT_COLORSPACE_IS_HDR(final_colorspace);
+   auto hdr_metadata = display_setting_version_ > 0 ? &display_hdr_metadata_
+                       : has_hdr_metadata_          ? &hdr_metadata_
+--- /dev/null
++++ b/src/dxmt/dxmt_present_format.hpp
+@@ -0,0 +1,14 @@
++#pragma once
++#include "winemetal.h"
++
++namespace dxmt {
++// Explicit comparison for packed 10-bit SDR desktop presentation. The game
++// retains its original render targets; the present shader converts into BGRA8.
++// HDR, linear/wide SDR, other formats and ordinary launches retain their format.
++inline WMTPixelFormat SelectSDRPresentationFormat(
++    WMTPixelFormat format, WMTColorSpace colorspace, bool enabled) {
++  if (enabled && colorspace == WMTColorSpaceSRGB && format == WMTPixelFormatRGB10A2Unorm)
++    return WMTPixelFormatBGRA8Unorm;
++  return format;
++}
++} // namespace dxmt

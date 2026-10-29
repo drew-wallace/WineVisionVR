@@ -40,6 +40,16 @@ ARM64EC_REQUIRED_BUILTINS = {
     "dwmapi.dll", "wsock32.dll", "avrt.dll", "vcruntime140.dll", "msvcp140.dll",
     # The audio endpoint client uses Madeira's already linked native driver.
     "mmdevapi.dll",
+    # Slay the Spire 2 imports text/accessibility services; Steam and SDL also
+    # load theme, TLS and legacy audio services dynamically. The ARM64 service
+    # copies cannot be loaded by an ARM64EC/x64 process (STATUS_INVALID_IMAGE_FORMAT).
+    "dwrite.dll", "uiautomationcore.dll", "oleacc.dll", "uxtheme.dll",
+    "msimg32.dll", "schannel.dll", "dsound.dll",
+    # Godot loads DirectComposition before creating its D3D12 device.
+    "dcomp.dll", "ktmw32.dll",
+    # Wine's IL-only image loader imports this shim even when CoreCLR hosts
+    # the managed runtime itself (System.Runtime.dll, .NET 9 device probe).
+    "mscoree.dll",
 }
 # Prefix initialization and services run through the 64-bit WoW64 host farm.
 # The translated i386 farm supplies their client DLLs, not duplicate service EXEs.

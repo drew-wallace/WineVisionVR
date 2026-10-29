@@ -1,6 +1,7 @@
 import ARKit
 import CompositorServices
 import Metal
+import WindowsVRCore
 import QuartzCore
 import os
 import SwiftUI
@@ -109,7 +110,7 @@ private struct WindowsVRCompositorConfiguration: CompositorLayerConfiguration {
         // with foveation off aborts Compositor Services). Without foveation, leave
         // the system's quality untouched for uniform guest eye textures.
         if foveation && capabilities.supportsFoveation {
-            configuration.maxRenderQuality = 1.0
+            configuration.maxRenderQuality = .init(rawValue: 1)
         }
         // Match the guest runtime's advertised D3D11 sRGB swapchain format.
         // The compositor default may be RGBA16Float, which this first path
@@ -179,23 +180,20 @@ private final class WindowsVRCompositorRenderer {
     private var lastGPUStatisticsTime: TimeInterval = 0
     private static let rateMapExtrapEnabled = ProcessInfo.processInfo.environment["WVR_NEURAL_RATEMAP_EXTRAP"] == "1"
     // Info.plist is immutable at runtime; read the uniform eye raster once instead of every display frame.
-    private static let uniformEyeWidth = UInt32(Bundle.main.object(forInfoDictionaryKey: "WVRUniformEyeWidth") as? Int ?? 1920)
-    private static let uniformEyeHeight = UInt32(Bundle.main.object(forInfoDictionaryKey: "WVRUniformEyeHeight") as? Int ?? 1792)
+    private let uniformEyeSize = WindowsVRLaunchRendering.eyeSize
     private var rateMapParameterRing: [[(any MTLBuffer)?]] = [[nil, nil], [nil, nil], [nil, nil]]
     private var rateMapRingIndex: Int = 0
     private var lastSynthesizedRateMaps: [(any MTLRasterizationRateMap)?] = [nil, nil]
-    // Adaptive frame generation (synthesis mode 4). Render-task state only.
     private let adaptiveGenerationEnabled = UserDefaults.standard.integer(forKey: "WVRFrameSynthesisMode") == 4
-    private var adaptiveFrameIntervals: [CFTimeInterval] = []
-    private var adaptiveLastRealFrameTime: CFTimeInterval?
-    private var adaptiveEngaged = false
-    private var adaptiveBelowSince: CFTimeInterval?
-    private var adaptiveAboveSince: CFTimeInterval?
-    private var adaptivePacingLocked = false
-    private var adaptiveEmptyTicks = 0
-    private var adaptiveEngagements: UInt64 = 0
+    private var cadence = WindowsVRDisplayCadence()
+    private var adaptive = WindowsVRAdaptiveSynthesis()
+    private var adaptiveEngaged: Bool { adaptive.engaged }
+    private var adaptivePacingLocked: Bool { adaptive.pacingLocked }
+    private var adaptiveEngagements: UInt64 { adaptive.engagements }
     private var adaptiveGeneratedFrames: UInt64 = 0
     private var adaptiveReprojectedFrames: UInt64 = 0
+    private var windowGeneratedFrames: UInt64 = 0
+    private var windowReprojectedFrames: UInt64 = 0
     private var transferStatus = WindowsVRFrameTransferStatus()
     private var performanceStartedAt = CACurrentMediaTime()
     private var presentationCount: UInt64 = 0
@@ -421,7 +419,7 @@ private final class WindowsVRCompositorRenderer {
         self.presentationDepthState = layerRenderer.device.makeDepthStencilState(descriptor: depthDescriptor)
         let synthesisMode = UserDefaults.standard.integer(forKey: "WVRFrameSynthesisMode")
         if (1...4).contains(synthesisMode) {
-            // Mode 4 runs the stereo YORO/AFW + foveal neural reconstruction & 90 Hz extrapolation path.
+            // Mode 4 runs stereo reconstruction and extrapolation at the actual display cadence.
             synthesisContext = wvr_synthesis_create_v1(Unmanaged.passUnretained(layerRenderer.device as AnyObject).toOpaque(), UInt32(synthesisMode))
             LaunchLogFile.append("synthesis", "Custom Metal reconstruction mode=\(synthesisMode) initialized=\(synthesisContext != nil); source render scale unchanged.")
         }
@@ -430,6 +428,11 @@ private final class WindowsVRCompositorRenderer {
             LaunchLogFile.append("reconstruction", "Shadow validation requested; initialized=\(reconstructionContext != nil). Display remains normal stereo.")
         }
         LaunchLogFile.append("synthesis", "Rate-map physical extrapolation (WVR_NEURAL_RATEMAP_EXTRAP) is \(Self.rateMapExtrapEnabled ? "ENABLED" : "DISABLED").")
+        let capabilities = WindowsVRHardwareCapabilities.detect(layerRenderer.device)
+        if let data = try? JSONEncoder().encode(capabilities), let json = String(data: data, encoding: .utf8) {
+            LaunchLogFile.append("hardware", json)
+        }
+        LaunchLogFile.append("rendering", "uniformEye=\(uniformEyeSize.width)x\(uniformEyeSize.height) synthesisMode=\(synthesisMode); tensor backend remains opt-in pending device validation")
         for array in [false, true] {
             _ = spatialPipeline(for: .bgra8Unorm_srgb, depthFormat: .depth32Float, sourceIsArray: array)
         }
@@ -442,7 +445,7 @@ private final class WindowsVRCompositorRenderer {
     }
 
     private func rateMapParameters(for rateMap: any MTLRasterizationRateMap, eye: Int, slot: Int) -> (bytes: [UInt8]?, buffer: (any MTLBuffer)?) {
-        let size = rateMap.parameterBufferSizeAndAlign.size
+        let size = rateMap.parameterDataSizeAndAlign.size
         guard size > 0, eye < 2, slot < 3 else { return (nil, nil) }
         let buffer: any MTLBuffer
         if let existing = rateMapParameterRing[slot][eye], existing.length >= size {
@@ -489,6 +492,7 @@ private final class WindowsVRCompositorRenderer {
                 Self.log.notice("Layer renderer paused")
                 LaunchLogFile.append("lifecycle", "Layer renderer paused")
                 wvr_compositor_pause_v1()
+                resetPerformanceHistory()
                 if trackingStarted {
                     arSession.stop()
                     controllerTracking.reset()
@@ -525,9 +529,9 @@ private final class WindowsVRCompositorRenderer {
         guard layerRenderer.configuration.isFoveationEnabled else { return }
         let requested = Float(UserDefaults.standard.double(forKey: "WVRRenderQuality"))
         guard requested > 0 else { return }
-        let ceiling = layerRenderer.configuration.maxRenderQuality
+        let ceiling = layerRenderer.configuration.maxRenderQuality.rawValue
         let applied = min(requested, ceiling)
-        layerRenderer.renderQuality = applied
+        layerRenderer.renderQuality = .init(rawValue: applied)
         LaunchLogFile.append("compositor", "Render quality requested=\(requested) applied=\(applied) max=\(ceiling)")
     }
 
@@ -677,11 +681,11 @@ private final class WindowsVRCompositorRenderer {
         else { return false }
 
         let foveated = layerRenderer.configuration.isFoveationEnabled
-        // Uniform guest eye raster for the M2 profile, already a 64-pixel multiple
-        // so producer extent alignment for Unity leaves it unchanged. Never
+        // Session-fixed uniform guest eye raster for the selected hardware preset
+        // Never
         // advertise gaze-varying physical allocation dimensions to OpenXR.
-        let width = Self.uniformEyeWidth
-        let height = Self.uniformEyeHeight
+        let width = UInt32(uniformEyeSize.width)
+        let height = UInt32(uniformEyeSize.height)
         // Guest D3D11 swapchains remain RGBA sRGB even when the compositor
         // display target is BGRA. Presentation samples and converts the format.
         let producerFormat = UInt32(MTLPixelFormat.rgba8Unorm_srgb.rawValue)
@@ -724,6 +728,13 @@ private final class WindowsVRCompositorRenderer {
         // Set the anchor even when it is not yet tracked: the compositor needs
         // it to reproject the frame to the display-time head pose.
         drawable.deviceAnchor = anchor
+        let oldRevision = cadence.revision
+        cadence.observe(presentationTime: targetTimestamp, tracked: anchor.isTracked)
+        if cadence.revision != oldRevision {
+            adaptive.reset()
+            lastTransferTime = nil
+            if let synthesisContext { wvr_synthesis_reset_history_v1(synthesisContext) }
+        }
         let isTracked = anchor.isTracked
         let originFromDevice = isTracked ? anchor.originFromAnchorTransform : matrix_identity_float4x4
 
@@ -765,7 +776,15 @@ private final class WindowsVRCompositorRenderer {
         return (0..<4).allSatisfy { tangents[$0].isFinite && tangents[$0] > 0 } ? tangents : nil
     }
 
+    private func resetPerformanceHistory() {
+        cadence.reset()
+        adaptive.reset()
+        lastTransferTime = nil
+        if let synthesisContext { wvr_synthesis_reset_history_v1(synthesisContext) }
+    }
+
     private func publishUnavailablePose(timestamp: TimeInterval = CACurrentMediaTime()) {
+        resetPerformanceHistory()
         withUnsafeTemporaryAllocation(of: Float.self, capacity: 90) { values in
             values.initialize(repeating: 0)
             let head = values.baseAddress!
@@ -794,7 +813,7 @@ private final class WindowsVRCompositorRenderer {
 
         var acquired = WVRAcquiredStereoFrameV2()
         acquired.structSize = UInt32(MemoryLayout<WVRAcquiredStereoFrameV2>.size)
-        if LaunchDiagnostics.enabled || reconstructionContext != nil || synthesisContext != nil {
+        if LaunchDiagnostics.performanceEnabled || reconstructionContext != nil || synthesisContext != nil {
             let now=CACurrentMediaTime()
             if now-lastGPUStatisticsTime>=5 {
                 lastGPUStatisticsTime=now
@@ -843,7 +862,7 @@ private final class WindowsVRCompositorRenderer {
         }
 
         let adaptiveWasEngaged = adaptiveEngaged
-        let adaptiveGenerate = adaptiveFrameGenerationTick(
+        let adaptiveGenerate = consumeGuestFrame && adaptiveFrameGenerationTick(
             hasNewFrame: hasFrame, now: CACurrentMediaTime(),
             forecastReliable: synthesisContext.map { wvr_synthesis_forecast_reliable_v1($0) != 0 } ?? false)
         if adaptiveWasEngaged && !adaptiveEngaged, let synthesisContext { wvr_synthesis_reset_history_v1(synthesisContext) }
@@ -1044,8 +1063,11 @@ private final class WindowsVRCompositorRenderer {
                     }
                 }
             }
-            if adaptiveGenerationEnabled && !hasFrame {
-                if synthesisAtDisplayPose { adaptiveGeneratedFrames &+= 1 } else { adaptiveReprojectedFrames &+= 1 }
+            if !hasFrame {
+                if consumeGuestFrame {
+                    if synthesisAtDisplayPose, let synthesisContext, wvr_synthesis_last_display_kind_v1(synthesisContext) == 2 { adaptiveGeneratedFrames &+= 1; windowGeneratedFrames &+= 1 }
+                    else { adaptiveReprojectedFrames &+= 1; windowReprojectedFrames &+= 1 }
+                }
             }
             // Game depth applies only to a fresh guest frame presented through the reprojection
             // path. Synthesized output is already at the display pose, so it keeps the fallback plane.
@@ -1091,14 +1113,16 @@ private final class WindowsVRCompositorRenderer {
                (cachedBySynthesis || holdsFreshGuestFrame || cacheEyes([leftSource, rightSource], generation: producerTargets.generation,
                          tracking: renderTracking, renderPose: renderPose, on: commandBuffer)) {
                 transferCount &+= 1
-                if LaunchDiagnostics.enabled {
+                if LaunchDiagnostics.performanceEnabled {
                     let now = CACurrentMediaTime()
                     if let previous = lastTransferTime, transferIntervals.count < 512 {
                         transferIntervals.append((now - previous) * 1000)
                     }
                     lastTransferTime = now
                 }
-                transferBytes &+= UInt64(leftSource.width * leftSource.height + rightSource.width * rightSource.height) * 8
+                if !holdsFreshGuestFrame {
+                    transferBytes &+= UInt64(leftSource.width * leftSource.height + rightSource.width * rightSource.height) * 8
+                }
             }
             if diagnoseThisFrame && LaunchDiagnostics.frameCaptureEnabled {
                 if hasFrame, let source = sources[0] { encodeFrameProbe(source, label: "frame", on: commandBuffer) }
@@ -1135,7 +1159,7 @@ private final class WindowsVRCompositorRenderer {
             readHeldGuestFrame?.endRead()
         }
         commandBuffer.commit()
-        if LaunchDiagnostics.enabled && consumeGuestFrame {
+        if LaunchDiagnostics.performanceEnabled && consumeGuestFrame {
             presentationCount &+= 1
             encodeMilliseconds += (CACurrentMediaTime() - encodeStartedAt) * 1000
             let elapsed = CACurrentMediaTime() - performanceStartedAt
@@ -1143,12 +1167,21 @@ private final class WindowsVRCompositorRenderer {
                 let intervals = transferIntervals.sorted()
                 let median = intervals.isEmpty ? 0 : intervals[intervals.count / 2]
                 let p95 = intervals.isEmpty ? 0 : intervals[(intervals.count - 1) * 95 / 100]
+                let p99 = intervals.isEmpty ? 0 : intervals[(intervals.count - 1) * 99 / 100]
+                var resources = [CChar](repeating: 0, count: 1024)
+                if wvr_metal_copy_resource_statistics(Unmanaged.passUnretained(layerRenderer.device as AnyObject).toOpaque(), &resources, UInt32(resources.count)) > 0 {
+                    LaunchLogFile.append("resource-performance", String(cString: resources))
+                }
                 LaunchLogFile.append("render-performance", String(format:
-                    "displayFPS=%.1f transferFPS=%.1f snapshotReadWriteMiBps=%.1f meanCPUEncodeMs=%.3f newFrameMedianMs=%.3f newFrameP95Ms=%.3f",
+                    "presentationSubmitFPS=%.1f freshTransferFPS=%.1f snapshotReadWriteMiBps=%.1f meanCPUEncodeMs=%.3f newFrameMedianMs=%.3f newFrameP95Ms=%.3f newFrameP99Ms=%.3f measuredDisplayHz=%.2f generatedSubmitFPS=%.1f reprojectedSubmitFPS=%.1f thermalState=%ld",
                     Double(presentationCount) / elapsed, Double(transferCount) / elapsed,
                     Double(transferBytes) / elapsed / 1048576,
-                    encodeMilliseconds / Double(max(1, presentationCount)), median, p95))
+                    encodeMilliseconds / Double(max(1, presentationCount)), median, p95, p99, 1 / cadence.period,
+                    Double(windowGeneratedFrames) / elapsed, Double(windowReprojectedFrames) / elapsed,
+                    ProcessInfo.processInfo.thermalState.rawValue))
                 performanceStartedAt = CACurrentMediaTime()
+                windowGeneratedFrames = 0
+                windowReprojectedFrames = 0
                 presentationCount = 0
                 transferCount = 0
                 transferIntervals.removeAll(keepingCapacity: true)
@@ -1368,8 +1401,8 @@ private final class WindowsVRCompositorRenderer {
                 encoder.setFragmentTexture(source.texture, index: 0)
                 encoder.setFragmentSamplerState(spatialSampler, index: 0)
                 var region = WVRSpatialSourceUniform(origin: SIMD2<Float>(Float(source.x),Float(source.y)),
-                    extent: SIMD2<Float>(Float(plan.rateMappedSource ? target.width : source.width),
-                                         Float(plan.rateMappedSource ? target.height : source.height)), slice: UInt32(source.slice),
+                    extent: SIMD2<Float>(Float(plan.rateMappedSource ? Int(target.width) : source.width),
+                                         Float(plan.rateMappedSource ? Int(target.height) : source.height)), slice: UInt32(source.slice),
                     padding: UInt32(layered ? target.slice : 0), presentationDepth: plan.depth, reserved: 0,
                     sourceFromDestinationClip: plan.reprojection)
                 withUnsafeBytes(of: &region) { bytes in
@@ -1437,64 +1470,12 @@ private final class WindowsVRCompositorRenderer {
             currentProjectionInverse: projection.inverse)
     }
 
-    private var adaptiveMedianInterval: CFTimeInterval? {
-        guard adaptiveFrameIntervals.count >= 4 else { return nil }
-        return adaptiveFrameIntervals.sorted()[adaptiveFrameIntervals.count / 2]
-    }
+    private var adaptiveMedianInterval: CFTimeInterval? { adaptive.medianInterval }
 
-    /// Runs once per display tick. Returns true when this tick (with no new guest frame) should present
-    /// a synthesized frame instead of plain reprojection.
     private func adaptiveFrameGenerationTick(hasNewFrame: Bool, now: CFTimeInterval, forecastReliable: Bool) -> Bool {
         guard adaptiveGenerationEnabled else { return false }
-        if hasNewFrame {
-            if let previous = adaptiveLastRealFrameTime {
-                let interval = now - previous
-                if interval > 0.001 && interval < 0.25 {
-                    adaptiveFrameIntervals.append(interval)
-                    if adaptiveFrameIntervals.count > 16 { adaptiveFrameIntervals.removeFirst() }
-                }
-            }
-            adaptiveLastRealFrameTime = now
-            adaptiveEmptyTicks = 0
-        } else {
-            adaptiveEmptyTicks &+= 1
-        }
-        // Engage when the median real rate stays below 85 FPS for 1 s; disengage when it stays at 88 FPS or more for 2 s.
-        if let interval = adaptiveMedianInterval {
-            let fps = 1 / interval
-            if !adaptiveEngaged {
-                if fps < 85 {
-                    let since = adaptiveBelowSince ?? now
-                    adaptiveBelowSince = since
-                    if now - since >= 1 {
-                        adaptiveEngaged = true
-                        adaptiveEngagements &+= 1
-                        adaptiveBelowSince = nil
-                    }
-                } else {
-                    adaptiveBelowSince = nil
-                }
-            } else if fps >= 88 {
-                let since = adaptiveAboveSince ?? now
-                adaptiveAboveSince = since
-                if now - since >= 2 {
-                    adaptiveEngaged = false
-                    adaptiveAboveSince = nil
-                }
-            } else {
-                adaptiveAboveSince = nil
-            }
-        }
-        // Pacing lock: a stable 40-50 FPS game puts real frames on every other display tick.
-        adaptivePacingLocked = adaptiveEngaged && adaptiveFrameIntervals.count == 16 &&
-            adaptiveFrameIntervals.allSatisfy { (0.020...0.025).contains($0) }
-        guard adaptiveEngaged, !hasNewFrame, forecastReliable,
-              let interval = adaptiveMedianInterval, let lastReal = adaptiveLastRealFrameTime else { return false }
-        // Horizon clamp: extrapolate at most one real frame interval. Beyond that the game is stalled.
-        guard now - lastReal <= interval else { return false }
-        // Generated frames take the odd empty ticks while pacing is locked.
-        if adaptivePacingLocked && adaptiveEmptyTicks % 2 == 0 { return false }
-        return true
+        return adaptive.tick(hasNewFrame: hasNewFrame, now: now, period: cadence.period,
+                             forecastReliable: forecastReliable)
     }
 
     private func presentationDepth(projection: simd_float4x4, range: SIMD2<Float>) -> Float? {

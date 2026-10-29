@@ -241,22 +241,22 @@ void SpdDownsampleMips_0_1_Intrinsics(FfxUInt32 x, FfxUInt32 y, FfxUInt32x2 work
 
     FfxInt32x2 tex = FfxInt32x2(workGroupID.xy * 64) + FfxInt32x2(x * 2, y * 2);
     FfxInt32x2 pix = FfxInt32x2(workGroupID.xy * 32) + FfxInt32x2(x, y);
-    v[0]     = SpdReduceLoadSourceImage(tex, slice);
+    v[0]     = SpdReduceLoadSourceImage(FfxUInt32x2(tex), slice);
     SpdStore(pix, v[0], 0, slice);
 
     tex  = FfxInt32x2(workGroupID.xy * 64) + FfxInt32x2(x * 2 + 32, y * 2);
     pix  = FfxInt32x2(workGroupID.xy * 32) + FfxInt32x2(x + 16, y);
-    v[1] = SpdReduceLoadSourceImage(tex, slice);
+    v[1] = SpdReduceLoadSourceImage(FfxUInt32x2(tex), slice);
     SpdStore(pix, v[1], 0, slice);
 
     tex  = FfxInt32x2(workGroupID.xy * 64) + FfxInt32x2(x * 2, y * 2 + 32);
     pix  = FfxInt32x2(workGroupID.xy * 32) + FfxInt32x2(x, y + 16);
-    v[2] = SpdReduceLoadSourceImage(tex, slice);
+    v[2] = SpdReduceLoadSourceImage(FfxUInt32x2(tex), slice);
     SpdStore(pix, v[2], 0, slice);
 
     tex  = FfxInt32x2(workGroupID.xy * 64) + FfxInt32x2(x * 2 + 32, y * 2 + 32);
     pix  = FfxInt32x2(workGroupID.xy * 32) + FfxInt32x2(x + 16, y + 16);
-    v[3] = SpdReduceLoadSourceImage(tex, slice);
+    v[3] = SpdReduceLoadSourceImage(FfxUInt32x2(tex), slice);
     SpdStore(pix, v[3], 0, slice);
 
     if (mip <= 1)
@@ -289,22 +289,22 @@ void SpdDownsampleMips_0_1_LDS(FfxUInt32 x, FfxUInt32 y, FfxUInt32x2 workGroupID
 
     FfxInt32x2 tex = FfxInt32x2(workGroupID.xy * 64) + FfxInt32x2(x * 2, y * 2);
     FfxInt32x2 pix = FfxInt32x2(workGroupID.xy * 32) + FfxInt32x2(x, y);
-    v[0]     = SpdReduceLoadSourceImage(tex, slice);
+    v[0]     = SpdReduceLoadSourceImage(FfxUInt32x2(tex), slice);
     SpdStore(pix, v[0], 0, slice);
 
     tex  = FfxInt32x2(workGroupID.xy * 64) + FfxInt32x2(x * 2 + 32, y * 2);
     pix  = FfxInt32x2(workGroupID.xy * 32) + FfxInt32x2(x + 16, y);
-    v[1] = SpdReduceLoadSourceImage(tex, slice);
+    v[1] = SpdReduceLoadSourceImage(FfxUInt32x2(tex), slice);
     SpdStore(pix, v[1], 0, slice);
 
     tex  = FfxInt32x2(workGroupID.xy * 64) + FfxInt32x2(x * 2, y * 2 + 32);
     pix  = FfxInt32x2(workGroupID.xy * 32) + FfxInt32x2(x, y + 16);
-    v[2] = SpdReduceLoadSourceImage(tex, slice);
+    v[2] = SpdReduceLoadSourceImage(FfxUInt32x2(tex), slice);
     SpdStore(pix, v[2], 0, slice);
 
     tex  = FfxInt32x2(workGroupID.xy * 64) + FfxInt32x2(x * 2 + 32, y * 2 + 32);
     pix  = FfxInt32x2(workGroupID.xy * 32) + FfxInt32x2(x + 16, y + 16);
-    v[3] = SpdReduceLoadSourceImage(tex, slice);
+    v[3] = SpdReduceLoadSourceImage(FfxUInt32x2(tex), slice);
     SpdStore(pix, v[3], 0, slice);
 
     if (mip <= 1)
@@ -471,22 +471,22 @@ void SpdDownsampleMips_6_7(FfxUInt32 x, FfxUInt32 y, FfxUInt32 mips, FfxUInt32 s
 {
     FfxInt32x2   tex = FfxInt32x2(x * 4 + 0, y * 4 + 0);
     FfxInt32x2   pix = FfxInt32x2(x * 2 + 0, y * 2 + 0);
-    FfxFloat32x4 v0  = SpdReduceLoad4(tex, slice);
+    FfxFloat32x4 v0  = SpdReduceLoad4(FfxUInt32x2(tex), slice);
     SpdStore(pix, v0, 6, slice);
 
     tex       = FfxInt32x2(x * 4 + 2, y * 4 + 0);
     pix       = FfxInt32x2(x * 2 + 1, y * 2 + 0);
-    FfxFloat32x4 v1 = SpdReduceLoad4(tex, slice);
+    FfxFloat32x4 v1 = SpdReduceLoad4(FfxUInt32x2(tex), slice);
     SpdStore(pix, v1, 6, slice);
 
     tex       = FfxInt32x2(x * 4 + 0, y * 4 + 2);
     pix       = FfxInt32x2(x * 2 + 0, y * 2 + 1);
-    FfxFloat32x4 v2 = SpdReduceLoad4(tex, slice);
+    FfxFloat32x4 v2 = SpdReduceLoad4(FfxUInt32x2(tex), slice);
     SpdStore(pix, v2, 6, slice);
 
     tex       = FfxInt32x2(x * 4 + 2, y * 4 + 2);
     pix       = FfxInt32x2(x * 2 + 1, y * 2 + 1);
-    FfxFloat32x4 v3 = SpdReduceLoad4(tex, slice);
+    FfxFloat32x4 v3 = SpdReduceLoad4(FfxUInt32x2(tex), slice);
     SpdStore(pix, v3, 6, slice);
 
     if (mips <= 7)

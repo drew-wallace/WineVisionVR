@@ -1,0 +1,69 @@
+{
+  "date": "2026-10-25",
+  "baseCommit": "53ed2d3",
+  "scope": "host CPU/Metal checks and visionOS compilation; no headset game FPS result",
+  "toolchain": "Xcode 27.0 (27A266a), visionOS 27.0 SDK",
+  "hostGPU": "Apple M4 Pro",
+  "checks": {
+    "core": "pass",
+    "core-xros": "pass",
+    "app-typecheck": "pass",
+    "native-xros": "pass",
+    "tensor-xros": "pass",
+    "fsr-ffx_fsr3upscaler_accumulate_pass": "pass",
+    "fsr-ffx_fsr3upscaler_luma_instability_pass": "pass",
+    "fsr-ffx_fsr3upscaler_luma_pyramid_pass": "pass",
+    "fsr-ffx_fsr3upscaler_prepare_inputs_pass": "pass",
+    "fsr-ffx_fsr3upscaler_prepare_reactivity_pass": "pass",
+    "fsr-ffx_fsr3upscaler_rcas_pass": "pass",
+    "fsr-ffx_fsr3upscaler_shading_change_pass": "pass",
+    "fsr-ffx_fsr3upscaler_shading_change_pyramid_pass": "pass",
+    "fsr-library": "pass",
+    "tensor-host-build": "pass",
+    "tensor-host": "pass",
+    "frame-state-build": "pass",
+    "frame-state": "pass",
+    "packaging": "pass",
+    "frame-path": "pass",
+    "foveation": "pass",
+    "synthesis": "pass",
+    "build-parity": "pass"
+  },
+  "swiftCoreTests": 13,
+  "packagingTests": 15,
+  "tensorCases": 8,
+  "tensorMaximumAbsoluteError": 6.10352e-05,
+  "reconstructionGPUVariants": {
+    "plain": "pass",
+    "srgb": "pass",
+    "array": "pass",
+    "array-srgb": "pass"
+  },
+  "translationEnvironment": "pass; existing persistent-cache defaults and explicit overrides",
+  "deviceReadOnlyObservation": {
+    "productType": "RealityDevice17,1",
+    "visionOS": "27.0.1",
+    "paired": true,
+    "developerMode": "enabled"
+  },
+  "notEstablished": [
+    "Linked/signed app: checkout lacks fetched Madeira/FEX sources, preserved native runtime framework and staged guest artifacts.",
+    "Reconstruction guest depth checks: attempted suite stops at absent pinned OpenXR headers; DXMT source also absent.",
+    "FEX cache parser and guest DLL package checks require absent fetched/built dependency inputs.",
+    "No app installation or game launch; no M5 or physical M2 game FPS, image-quality, latency or 30-minute thermal results.",
+    "FSR shader compilation and linking passed; FSR game runtime behavior was not validated.",
+    "Tensor default remains off; host arithmetic checks do not establish M5 acceleration benefit."
+  ],
+  "followupDeployment": {
+    "date": "2026-10-27",
+    "version": "0.1.0",
+    "build": "1",
+    "releaseBuild": "passed",
+    "strictSignatures": "passed",
+    "runtimePackage": "passed",
+    "physicalM5Installation": "success",
+    "packagingRegressionTests": 16,
+    "details": "windows-vr-device-build.md",
+    "gamePerformance": "unmeasured"
+  }
+}

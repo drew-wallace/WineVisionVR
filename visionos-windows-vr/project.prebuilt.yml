@@ -3,6 +3,10 @@ options:
   minimumXcodeGenVersion: 2.38.0
   deploymentTarget:
     visionOS: "27.0"
+settings:
+  base:
+    CURRENT_PROJECT_VERSION: "18"
+    MARKETING_VERSION: "0.1.0"
 packages:
   WindowsVRCore:
     path: ../windows-vr
@@ -33,8 +37,6 @@ targets:
         OTHER_LDFLAGS: ["$(inherited)", "-lz", "-llzma"]
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
-        INFOPLIST_KEY_WVRUniformEyeWidth: 1888
-        INFOPLIST_KEY_WVRUniformEyeHeight: 1792
         CODE_SIGN_STYLE: Automatic
         CODE_SIGN_IDENTITY: Apple Development
         # Increased Memory Limit, the same single memory entitlement Madeira ships (its
@@ -48,10 +50,14 @@ targets:
     info:
       path: Generated-Info.plist
       properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        WVRUniformEyeWidth: 1888
+        WVRUniformEyeHeight: 1792
         LSApplicationQueriesSchemes: [stikdebug, stikjit]
         UIFileSharingEnabled: true
-        # Writes the launcher log and the compositor bridge trace to Documents. Off in release builds.
-        WVRDiagnostics: true
+        # Heavy bridge tracing is opt-in; the launcher offers separate performance summaries.
+        WVRDiagnostics: false
         WVRRuntimePluginFramework: WindowsVRLaunchAdapter.framework
         LSSupportsOpeningDocumentsInPlace: true
         GCSupportsControllerUserInteraction: true
@@ -90,6 +96,8 @@ targets:
       # Experiment: also expose the NLS tables at <bundle>/nls, where Madeira's own layout puts them.
       - path: Resources/Runtime/nls
         type: folder
+        buildPhase: resources
+      - path: Resources/vr_foveal_student_fp16.wvnw
         buildPhase: resources
       - path: Resources/WindowsVR
         type: folder
@@ -133,13 +141,20 @@ targets:
       - sdk: QuartzCore.framework
       - sdk: Metal.framework
       - sdk: AVFAudio.framework
+      - sdk: MetalFX.framework
+      - sdk: CoreML.framework
+      - sdk: CoreVideo.framework
     sources:
+      - path: ../windows-vr-native/third-party/fidelityfx/gpu/fsr3upscaler/msl
+        buildPhase: sources
       - path: ../windows-vr-native/Sources
       - path: ../windows-vr-native/include
         headerVisibility: public
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.avpplay.windows-vr.native-bridge
+        MTL_HEADER_SEARCH_PATHS: $(SRCROOT)/../windows-vr-native/third-party/fidelityfx/gpu
+        MTL_LANGUAGE_REVISION: Metal40
         GENERATE_INFOPLIST_FILE: YES
         CLANG_ENABLE_OBJC_ARC: YES
         CLANG_CXX_LANGUAGE_STANDARD: c++20

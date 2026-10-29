@@ -145,7 +145,11 @@ int main() {
     submit.leftHeight = submit.rightHeight = H;
     auto ctx = wvr_synthesis_create_v1((__bridge void *)device, 2);
     assert(ctx);
-    assert(!wvr_synthesis_create_v1((__bridge void *)device, 3));
+    auto temporal = wvr_synthesis_create_v1((__bridge void *)device, 3);
+    assert(temporal);
+    wvr_synthesis_destroy_v1(temporal);
+    assert(!wvr_synthesis_create_v1((__bridge void *)device, 0));
+    assert(!wvr_synthesis_create_v1((__bridge void *)device, 5));
     auto ingest = [&](bool finish = true) {
       uint64_t ticket;
       assert(wvr_compositor_submit_stereo_frame_v2(&submit, &ticket) == 0);
@@ -191,6 +195,7 @@ int main() {
     submit.producerTimestampNanoseconds += 33333333;
     ingest();
     auto current = readColor(queue, wvr_synthesis_copy_output_v1(ctx, 0));
+    assert(wvr_synthesis_last_display_kind_v1(ctx) == 1);
     auto generated = [queue commandBuffer];
     assert(wvr_synthesis_encode_v1(
                ctx, submit.producerTimestampNanoseconds + 16666666, W, H, W, H,
@@ -198,6 +203,7 @@ int main() {
     [generated commit];
     [generated waitUntilCompleted];
     assert(generated.status == MTLCommandBufferStatusCompleted);
+    assert(wvr_synthesis_last_display_kind_v1(ctx) == 2);
     auto predicted = readColor(queue, wvr_synthesis_copy_output_v1(ctx, 0));
     unsigned moved = 0;
     for (unsigned i = 0; i < W * H; i++)

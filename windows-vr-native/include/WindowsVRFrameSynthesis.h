@@ -65,6 +65,8 @@ int32_t wvr_synthesis_forecast_reliable_v1(void *context);
 // depth (clip.z/clip.w with the display projection), 0 where no source pixel maps.
 // Owned, retained texture; release with the bridge.
 void *wvr_synthesis_copy_display_depth_v1(void *context, uint32_t eye);
+// Last encode: 0 = unavailable, 1 = reconstructed/reprojected, 2 = scene-motion extrapolated.
+uint32_t wvr_synthesis_last_display_kind_v1(void *context);
 // Drops the synthesized-output history used for disocclusion fill.
 void wvr_synthesis_reset_history_v1(void *context);
 #ifdef __cplusplus

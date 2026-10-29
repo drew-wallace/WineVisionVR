@@ -111,6 +111,7 @@ int main() {
       r.abiVersion = WVR_GUEST_FOVEATION_ABI;
       r.structSize = sizeof(r);
       r.operation = 1;
+      r.arrayLength = 1;
       r.flags = 1;
       r.width = 512;
       r.height = 256;
@@ -209,6 +210,7 @@ int main() {
     scenePass.abiVersion = WVR_GUEST_FOVEATION_ABI;
     scenePass.structSize = sizeof(scenePass);
     scenePass.operation = 1;
+    scenePass.arrayLength = 1;
     scenePass.flags = 1;
     scenePass.width = 1024;
     scenePass.height = 512;

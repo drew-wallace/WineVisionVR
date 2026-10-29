@@ -2,6 +2,7 @@
 #import "WindowsVRFsr3Upscaler.h"
 #import "WindowsVRMetalFXUpscaler.h"
 #import "WindowsVRGuestFoveation.h"
+#import "WindowsVRM5TensorConvolution.h"
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #import <simd/simd.h>
@@ -17,7 +18,7 @@
 #include <memory>
 #include <mutex>
 #include <vector>
-#if TARGET_OS_VISION || TARGET_OS_OSX
+#if __has_include(<IOSurface/IOSurface.h>)
 #import <IOSurface/IOSurface.h>
 #endif
 #if __has_include(<CoreVideo/CoreVideo.h>)
@@ -1373,7 +1374,7 @@ id<MTLTexture> make_tex(id<MTLDevice> d, MTLPixelFormat f, unsigned w, unsigned 
 // VeRantyx-inspired zero-copy IOSurface texture allocator for Apple Silicon UMA
 // Enables shared memory access between Metal compute, ANE CoreML, and video encoders
 id<MTLTexture> make_iosurface_tex(id<MTLDevice> d, MTLPixelFormat f, unsigned w, unsigned h) {
-#if TARGET_OS_VISION || TARGET_OS_OSX
+#if __has_include(<IOSurface/IOSurface.h>)
   NSDictionary *props = @{
     (__bridge id)kIOSurfaceWidth: @(w),
     (__bridge id)kIOSurfaceHeight: @(h),
@@ -1507,6 +1508,7 @@ struct WVRNeuralGpuTimingState {
 } // namespace
 
 struct WVRNeuralContext {
+  WVRM5TensorConvolution tensorConvolution;
   __strong id<MTLDevice> device;
   __strong id<MTLComputePipelineState> pYoroStereoWarp = nil;
   __strong id<MTLComputePipelineState> pAfwTemporalWarp = nil;
@@ -1739,6 +1741,7 @@ extern "C" WVRNeuralContext *wvr_neural_create_v1(void *metalDevice) {
     if (!metalDevice) return nullptr;
     id<MTLDevice> dev = (__bridge id<MTLDevice>)metalDevice;
     auto ctx = new WVRNeuralContext(dev);
+    ctx->tensorConvolution.initialize(dev);
 
     NSError *error = nil;
     id<MTLLibrary> lib = [dev newLibraryWithSource:kNeuralSource options:nil error:&error];
@@ -2178,6 +2181,13 @@ extern "C" int32_t wvr_neural_encode_ratemap_v1(
 
     id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
     if (!enc) return -1;
+    if (ctx->tensorConvolution.ready()) {
+      // Capture shared state, not the context, which may die before GPU retirement.
+      auto failed = ctx->tensorConvolution.gpuFailed;
+      [cmd addCompletedHandler:^(id<MTLCommandBuffer> b) {
+        if (b.status == MTLCommandBufferStatusError) failed->store(true, std::memory_order_relaxed);
+      }];
+    }
 
     id<MTLCounterSampleBuffer> sampleBuf = nil;
     if (sNeuralGpuTimingEnabled && ctx->timingCounterSamplingSupported) {
@@ -2238,6 +2248,7 @@ extern "C" int32_t wvr_neural_encode_ratemap_v1(
       [enc setBuffer:ctx->weightsBuffer offset:0 atIndex:2];
       [enc setBuffer:outBuf offset:0 atIndex:3];
       [enc setBytes:&cp length:sizeof(cp) atIndex:4];
+      if (!wantNaive && ctx->tensorConvolution.encode(enc, cp)) return;
       id<MTLComputePipelineState> tiledPipe = (stride == 2) ? ctx->pConv3x3TiledS2 : ctx->pConv3x3Tiled;
       if (!ctx->useNaiveConv && tiledPipe) {
         [enc setComputePipelineState:tiledPipe];
@@ -2271,7 +2282,7 @@ extern "C" int32_t wvr_neural_encode_ratemap_v1(
             (unsigned long)outColor[1].width, (unsigned long)outColor[1].height,
             primaryEye,
             useMetalFX ? "MetalFX" : (useFSR ? "FSR 3.1" : "none"),
-            neuralRatemapExtrapEnabled() ? 1 : 0, objMotionOn ? 1 : 0, reconEveryCall ? 1 : 0, sNeuralGpuTimingMode,
+            neuralRatemapExtrapEnabled() ? 1 : 0, (objectMotionEnabled() && ctx->pObjectMotionEstimate) ? 1 : 0, reconEveryCall ? 1 : 0, sNeuralGpuTimingMode,
             (unsigned long long)sNeuralDumpFrame);
     }
     if (sNeuralPathLogEvery && (encodeIndex % sNeuralPathLogEvery) == 0) {
@@ -3199,9 +3210,9 @@ extern "C" int32_t wvr_neural_predict_ane_v1(
     if (!ctx || !ctx->aneLoaded || !ctx->coreMLModel || !inputIOSurface) {
       return -1;
     }
-#if __has_include(<CoreML/CoreML.h>)
+#if __has_include(<CoreML/CoreML.h>) && __has_include(<IOSurface/IOSurface.h>)
     MLModel *model = (__bridge MLModel *)ctx->coreMLModel;
-    IOSurfaceRef inSurf = (__bridge IOSurfaceRef)inputIOSurface;
+    IOSurfaceRef inSurf = static_cast<IOSurfaceRef>(inputIOSurface);
 
     CVPixelBufferRef pixelBuffer = NULL;
     CVReturn status = CVPixelBufferCreateWithIOSurface(kCFAllocatorDefault, inSurf, NULL, &pixelBuffer);
@@ -3232,7 +3243,7 @@ extern "C" int32_t wvr_neural_copy_stats_v1(WVRNeuralContext *ctx, char *buffer,
   if (!ctx || !buffer || !capacity) return 0;
   std::lock_guard lock(ctx->mutex);
   int n = snprintf(buffer, capacity,
-                   "neural_foveal weights=%s fovealJobs=%llu stereoWarpJobs=%llu temporalWarpJobs=%llu extrapJobs=%llu extrapRateMapJobs=%llu objectMotionJobs=%llu tiledConvJobs=%llu naiveConvJobs=%llu reconReuses=%llu fsrEnabled=%d fsrJobs=%llu gazeRadiusL=%.4f gazeRadiusR=%.4f cropHRL=%u cropHRR=%u metalfxJobs=%llu "
+                   "neural_foveal weights=%s fovealJobs=%llu stereoWarpJobs=%llu temporalWarpJobs=%llu extrapJobs=%llu extrapRateMapJobs=%llu objectMotionJobs=%llu tensorConvJobs=%llu tensorFallbacks=%llu tensorScratchBytes=%llu tiledConvJobs=%llu naiveConvJobs=%llu reconReuses=%llu fsrEnabled=%d fsrJobs=%llu gazeRadiusL=%.4f gazeRadiusR=%.4f cropHRL=%u cropHRR=%u metalfxJobs=%llu "
                    "path=[neural=%llu noFlag=%llu noWeights=%llu noHist=%llu noStereoB=%llu noDepthFrames=%llu upscalerFrames=%llu] weightsFnv64=%016llx",
                    ctx->aneLoaded ? "apple-neural-engine" : (ctx->weightsLoaded ? "gpu-conv-loaded" : "analytical-fallback"),
                    (unsigned long long)ctx->fovealJobs.load(),
@@ -3241,6 +3252,9 @@ extern "C" int32_t wvr_neural_copy_stats_v1(WVRNeuralContext *ctx, char *buffer,
                    (unsigned long long)ctx->extrapJobs.load(),
                    (unsigned long long)ctx->extrapRateMapJobs.load(),
                    (unsigned long long)ctx->objectMotionJobs.load(),
+                   (unsigned long long)ctx->tensorConvolution.jobs,
+                   (unsigned long long)ctx->tensorConvolution.fallbacks,
+                   (unsigned long long)ctx->tensorConvolution.scratchBytes(),
                    (unsigned long long)ctx->tiledConvJobs.load(),
                    (unsigned long long)ctx->naiveConvJobs.load(),
                    (unsigned long long)ctx->reconReuses.load(),

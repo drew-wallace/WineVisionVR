@@ -417,7 +417,10 @@ enum MadeiraDock {
     /// The host's environment for one launch.
     /// Internal Steam host settings stay outside imported manifest environments.
     static func extraLaunchArguments(appID: Int) -> String? {
-        appID == 386690 ? "-vrmode openvr" : nil
+        if let trial = WindowsVRAngleTrial.launchArguments(appID: appID, enabled: WindowsVRAngleTrial.enabled) {
+            return trial
+        }
+        return appID == 386690 ? "-vrmode openvr" : nil
     }
 
     @MainActor static func configure(_ game: DockGame, launchOption: UInt32 = 0) {

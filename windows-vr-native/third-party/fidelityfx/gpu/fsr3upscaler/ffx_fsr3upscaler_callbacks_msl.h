@@ -1077,30 +1077,18 @@ FfxFloat32x4 FrameInfo()
 // Because rw_spd_mip5 is both read (RWLoadPyramid) and written (StorePyramid) in SPD, the SPD mip pyramid texture
 // MUST be allocated as MTLPixelFormatRGBA16Float on Metal (or rw_spd_mip0..4 bound with access::write and mip 5 backed
 // by RGBA16Float).
-texture2d<FfxFloat32, access::read_write> rw_spd_mip0;
-texture2d<FfxFloat32, access::read_write> rw_spd_mip1;
-texture2d<FfxFloat32, access::read_write> rw_spd_mip2;
-texture2d<FfxFloat32, access::read_write> rw_spd_mip3;
-texture2d<FfxFloat32, access::read_write> rw_spd_mip4;
+texture2d<FfxFloat32, access::write> rw_spd_mip0;
+texture2d<FfxFloat32, access::write> rw_spd_mip1;
+texture2d<FfxFloat32, access::write> rw_spd_mip2;
+texture2d<FfxFloat32, access::write> rw_spd_mip3;
+texture2d<FfxFloat32, access::write> rw_spd_mip4;
 texture2d<FfxFloat32, access::read_write> rw_spd_mip5;
 
+// SPD's cross-workgroup tail reads only mip 5. Keep mip 0..4 write-only
+// to stay below Metal's eight read_write texture limit for these passes.
 FfxFloat32x2 RWLoadPyramid(FFX_PARAMETER_IN FfxInt32x2 iPxPos, FFX_PARAMETER_IN FfxUInt32 index)
 {
-#define LOAD(idx)                                                   \
-    if (index == idx)                                               \
-    {                                                               \
-        return rw_spd_mip##idx.read(FfxUInt32x2(iPxPos)).xy;        \
-    }
-    LOAD(0);
-    LOAD(1);
-    LOAD(2);
-    LOAD(3);
-    LOAD(4);
-    LOAD(5);
-
-    return FfxFloat32x2(0.0f, 0.0f);
-
-#undef LOAD
+    return index == 5 ? rw_spd_mip5.read(FfxUInt32x2(iPxPos)).xy : FfxFloat32x2(0.0f);
 }
 
 void StorePyramid(FFX_PARAMETER_IN FfxInt32x2 iPxPos, FFX_PARAMETER_IN FfxFloat32x2 outValue, FFX_PARAMETER_IN FfxUInt32 index)

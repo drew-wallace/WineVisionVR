@@ -42,6 +42,7 @@ public struct WindowsVRLaunchProfile: Codable, Sendable, Equatable, Identifiable
     public var launchArguments: [String]
     public var environment: [String: String]
     public var renderScale: Float
+    public var renderingPreset: WindowsVRRenderingPreset?
     public var presentation: WindowsPresentationMode
 
     public init(
@@ -52,7 +53,8 @@ public struct WindowsVRLaunchProfile: Codable, Sendable, Equatable, Identifiable
         launchArguments: [String],
         environment: [String: String] = [:],
         renderScale: Float = 1,
-        presentation: WindowsPresentationMode = .immersiveVR
+        presentation: WindowsPresentationMode = .immersiveVR,
+        renderingPreset: WindowsVRRenderingPreset? = nil
     ) throws {
         let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanName.isEmpty, cleanName.count <= 80 else {
@@ -71,11 +73,12 @@ public struct WindowsVRLaunchProfile: Codable, Sendable, Equatable, Identifiable
         self.environment = environment
         self.renderScale = renderScale
         self.presentation = presentation
+        self.renderingPreset = renderingPreset
         try validate()
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, backend, graphics, launchArguments, environment, renderScale, presentation
+        case id, name, backend, graphics, launchArguments, environment, renderScale, presentation, renderingPreset
     }
 
     public init(from decoder: Decoder) throws {
@@ -88,7 +91,8 @@ public struct WindowsVRLaunchProfile: Codable, Sendable, Equatable, Identifiable
             launchArguments: values.decode([String].self, forKey: .launchArguments),
             environment: values.decodeIfPresent([String: String].self, forKey: .environment) ?? [:],
             renderScale: values.decodeIfPresent(Float.self, forKey: .renderScale) ?? 1,
-            presentation: values.decodeIfPresent(WindowsPresentationMode.self, forKey: .presentation) ?? .immersiveVR
+            presentation: values.decodeIfPresent(WindowsPresentationMode.self, forKey: .presentation) ?? .immersiveVR,
+            renderingPreset: values.decodeIfPresent(WindowsVRRenderingPreset.self, forKey: .renderingPreset)
         )
     }
 

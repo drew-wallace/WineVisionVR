@@ -1,0 +1,189 @@
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -5511,7 +5511,7 @@
+       info.requires_synchronous_initialization = true;
+       scaler_entry.scaler = new TemporalScaler(ctx_->device->GetMTLDevice(), info);
+       if (pDesc->MotionVectorInDisplayRes) {
+-        WMTTextureInfo tex_info;
++        WMTTextureInfo tex_info{};
+         tex_info.width = scaler_entry.input_width;
+         tex_info.height = scaler_entry.input_height;
+         tex_info.depth = 1;
+--- a/src/d3d11/d3d11_resource_staging.cpp
++++ b/src/d3d11/d3d11_resource_staging.cpp
+@@ -102,7 +102,7 @@
+                                      typename tag::COM_IMPL **ppTexture) {
+   auto metal = pDevice->GetMTLDevice();
+   typename tag::DESC1 finalDesc;
+-  WMTTextureInfo texDesc; // unused
++  WMTTextureInfo texDesc{}; // unused
+   if (FAILED(CreateMTLTextureDescriptor(pDevice, pDesc, &finalDesc, &texDesc))) {
+     return E_INVALIDARG;
+   }
+--- a/src/d3d11/d3d11_texture_device.cpp
++++ b/src/d3d11/d3d11_texture_device.cpp
+@@ -392,7 +392,7 @@
+                                     const typename tag::DESC1 *pDesc,
+                                     const D3D11_SUBRESOURCE_DATA *pInitialData,
+                                     typename tag::COM_IMPL **ppTexture) {
+-  WMTTextureInfo info;
++  WMTTextureInfo info{};
+   typename tag::DESC1 finalDesc;
+   if (FAILED(CreateMTLTextureDescriptor(pDevice, pDesc, &finalDesc, &info))) {
+     return E_INVALIDARG;
+@@ -569,7 +569,7 @@
+     MTLD3D11Device *pDevice, const typename tag::DESC1 *pDescUnchecked, mach_port_t MachPort, 
+     D3DKMT_HANDLE hSharedKeyedMutex, REFIID riid, void **ppTexture
+ ) {
+-  WMTTextureInfo info;
++  WMTTextureInfo info{};
+   typename tag::DESC1 finalDesc;
+   if (FAILED(CreateMTLTextureDescriptor(pDevice, pDescUnchecked, &finalDesc, &info)))
+     return E_INVALIDARG;
+--- a/src/d3d11/d3d11_texture_dynamic.cpp
++++ b/src/d3d11/d3d11_texture_dynamic.cpp
+@@ -104,7 +104,7 @@
+                                     const typename tag::DESC1 *pDesc,
+                                     const D3D11_SUBRESOURCE_DATA *pInitialData,
+                                     typename tag::COM_IMPL **ppTexture) {
+-  WMTTextureInfo info;
++  WMTTextureInfo info{};
+   typename tag::DESC1 finalDesc;
+   if (FAILED(CreateMTLTextureDescriptor(pDevice, pDesc, &finalDesc, &info))) {
+     return E_INVALIDARG;
+--- a/src/d3d11/d3d11_texture_linear.cpp
++++ b/src/d3d11/d3d11_texture_linear.cpp
+@@ -188,7 +188,7 @@
+   if (format.PixelFormat == WMTPixelFormatInvalid) {
+     return E_FAIL;
+   }
+-  WMTTextureInfo info;
++  WMTTextureInfo info{};
+   D3D11_TEXTURE2D_DESC1 finalDesc;
+   if (FAILED(CreateMTLTextureDescriptor(pDevice, pDesc, &finalDesc, &info))) {
+     return E_INVALIDARG;
+@@ -225,7 +225,7 @@
+   if (format.PixelFormat == WMTPixelFormatInvalid) {
+     return E_FAIL;
+   }
+-  WMTTextureInfo info;
++  WMTTextureInfo info{};
+   D3D11_TEXTURE1D_DESC finalDesc;
+   if (FAILED(CreateMTLTextureDescriptor(pDevice, pDesc, &finalDesc, &info))) {
+     return E_INVALIDARG;
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -1165,7 +1165,7 @@
+         auto size_and_align = GetMTLDevice().heapBufferSizeAndAlign(desc->Width, {});
+         resource_info.SizeInBytes = size_and_align.size;
+       } else {
+-        WMTTextureInfo texture_info;
++        WMTTextureInfo texture_info{};
+         if (FAILED(PopulateWMTTextureInfo(GetMTLDevice(), texture_info, *desc))) {
+           DEBUG("GetResourceAllocationInfo: invalid texture descriptor\n");
+           goto invalid;
+--- a/src/d3d12/d3d12_texture.cpp
++++ b/src/d3d12/d3d12_texture.cpp
+@@ -194,7 +194,7 @@
+       break;
+     }
+ 
+-    WMTTextureInfo texture_info;
++    WMTTextureInfo texture_info{};
+     HRESULT hr = PopulateWMTTextureInfo(device_->GetMTLDevice(), texture_info, desc_);
+     if (FAILED(hr))
+       return hr;
+--- a/src/dxmt/dxmt_buffer.cpp
++++ b/src/dxmt/dxmt_buffer.cpp
+@@ -124,7 +124,7 @@
+     assert(texel_size);
+     assert(!(allocation->suballocation_size_ & (texel_size - 1)));
+     auto total_length = allocation->suballocation_size_ * allocation->suballocation_count_;
+-    WMTTextureInfo info;
++    WMTTextureInfo info{};
+     info.type = WMTTextureTypeTextureBuffer;
+     info.width = total_length / (uint64_t)texel_size;
+     info.height = 1;
+--- a/src/dxmt/dxmt_presenter.cpp
++++ b/src/dxmt/dxmt_presenter.cpp
+@@ -20,7 +20,7 @@
+   layer_props_.framebuffer_only = false; // how strangely setting it true results in worse performance
+   layer_props_.contents_scale = layer_props_.contents_scale * scale_factor;
+ 
+-  WMTTextureInfo texture_info;
++  WMTTextureInfo texture_info{};
+   texture_info.type = WMTTextureType2D;
+   texture_info.pixel_format = WMTPixelFormatRGBA32Float;
+   texture_info.usage = WMTTextureUsageShaderRead;
+--- a/src/dxmt/dxmt_texture.cpp
++++ b/src/dxmt/dxmt_texture.cpp
+@@ -249,7 +249,7 @@
+ Rc<TextureAllocation>
+ Texture::import(mach_port_t mach_port) {
+   Flags<TextureAllocationFlag> flags;
+-  WMTTextureInfo info;
++  WMTTextureInfo info{};
+   info.mach_port = mach_port;
+   auto texture = device_.newSharedTexture(info);
+   // now allocation's info is populated
+--- a/src/dxmt/dxmt_texture.hpp
++++ b/src/dxmt/dxmt_texture.hpp
+@@ -315,7 +315,7 @@
+ private:
+   void prepareAllocationViews(TextureAllocation* allocation);
+ 
+-  WMTTextureInfo info_;
++  WMTTextureInfo info_{};
+   unsigned bytes_per_image_ = 0;
+   unsigned bytes_per_row_ = 0;
+ 
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -318,16 +318,36 @@
+   info->compression = 0;
+ };
+ 
++// Keep the native boundary defensive even when a guest descriptor is malformed.
++static BOOL
++wmt_lossy_texture_eligible(MTLTextureDescriptor *desc, uint32_t request) {
++  if (request != 1 || desc.textureType != MTLTextureType2D ||
++      desc.sampleCount != 1 || desc.arrayLength != 1 || desc.depth != 1 ||
++      desc.storageMode != MTLStorageModePrivate ||
++      !(desc.usage & MTLTextureUsageRenderTarget) ||
++      (desc.usage & (MTLTextureUsageShaderWrite | MTLTextureUsagePixelFormatView)))
++    return NO;
++  switch (desc.pixelFormat) {
++  case MTLPixelFormatRGBA8Unorm:
++  case MTLPixelFormatBGRA8Unorm:
++  case MTLPixelFormatRGBA16Float:
++  case MTLPixelFormatRG11B10Float:
++  case MTLPixelFormatRGB10A2Unorm:
++    return YES;
++  default:
++    return NO;
++  }
++}
++
+ // Lossy compression needs Apple8 and private storage; a request that does not qualify is ignored
+ static void
+ apply_lossy_compression(id<MTLDevice> device, MTLTextureDescriptor *desc, struct WMTTextureInfo *info) {
+   if (@available(macOS 12.5, iOS 15, visionOS 1.0, *)) {
+-    if (info->usage & (WMTTextureUsageShaderWrite | WMTTextureUsagePixelFormatView))
++    if (!wmt_lossy_texture_eligible(desc, info->compression))
+       return;
+     if (![device supportsFamily:(MTLGPUFamily)WMTGPUFamilyApple8])
+       return;
+     desc.compressionType = MTLTextureCompressionTypeLossy;
+-    desc.resourceOptions = (desc.resourceOptions & ~MTLResourceStorageModeMask) | MTLResourceStorageModePrivate;
+   }
+ }
+ 
+@@ -338,7 +358,7 @@
+   struct WMTTextureInfo *info = params->info.ptr;
+   MTLTextureDescriptor *desc = [[MTLTextureDescriptor alloc] init];
+   fill_texture_descriptor(desc, info);
+-  if (info->compression)
++  if (info->compression == 1)
+     apply_lossy_compression(device, desc, info);
+ 
+   id<MTLTexture> ret = [device newTextureWithDescriptor:desc];

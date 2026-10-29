@@ -7,11 +7,13 @@ struct ContentView: View {
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @Bindable var model: LauncherModel
+    @AppStorage("WVRPerformanceDiagnostics") private var performanceDiagnostics = false
     @AppStorage("WVRFrameSynthesisMode") private var frameSynthesisMode = 4
     @AppStorage("WVRReconstructionValidation") private var reconstructionValidation = false
     @AppStorage("WVRRenderQuality") private var renderQuality: Double = 0
     @AppStorage("WVRInternalRenderScale") private var internalRenderScale = 1.0
     @AppStorage("WVRLossyRenderTargets") private var lossyRenderTargets = false
+    @AppStorage("WVRSTS2ANGLECompatibility") private var sts2AngleCompatibility = false
     @State private var importingManifest = false
     @State private var importingGameFolder = false
     @State private var exportingReport = false
@@ -57,10 +59,11 @@ struct ContentView: View {
             SteamLibraryModel.shared.runtimeBusy = !allowed
         }
         .task {
+            model.recoverAngleTrialIfIdle()
             model.refreshTransferredGames()
             // Explicit developer launch argument for repeatable device testing.
             // The normal app/library launch remains user driven.
-            if LaunchDiagnostics.enabled,
+            if LaunchDiagnostics.automatedLaunchEnabled,
                ProcessInfo.processInfo.arguments.contains("--vr-smoke-test"),
                !didStartDesktopSmokeTest {
                 didStartDesktopSmokeTest = true
@@ -75,7 +78,14 @@ struct ContentView: View {
                     }
                     await startLaunch()
                 } catch { model.presentLibraryError(error) }
-            } else if LaunchDiagnostics.enabled,
+            } else if LaunchDiagnostics.automatedLaunchEnabled, !didStartDesktopSmokeTest,
+                      let argument = ProcessInfo.processInfo.arguments.first(where: { $0.hasPrefix("--compatibility-probe=") }) {
+                didStartDesktopSmokeTest = true
+                do {
+                    try model.selectCompatibilityProbe(String(argument.dropFirst("--compatibility-probe=".count)))
+                    await startLaunch()
+                } catch { model.presentLibraryError(error) }
+            } else if LaunchDiagnostics.automatedLaunchEnabled,
                ProcessInfo.processInfo.arguments.contains("--desktop-smoke-test"),
                !didStartDesktopSmokeTest {
                 didStartDesktopSmokeTest = true
@@ -85,10 +95,11 @@ struct ContentView: View {
                     model.launchArgumentsText = "[\"--self-test\"]"
                     await startLaunch()
                 } catch { model.presentLibraryError(error) }
-            } else if LaunchDiagnostics.enabled, !didStartDesktopSmokeTest,
+            } else if LaunchDiagnostics.automatedLaunchEnabled, !didStartDesktopSmokeTest,
                       let argument = ProcessInfo.processInfo.arguments.first(where: { $0.hasPrefix("--steam-smoke-test=") }),
                       let appID = Int(argument.dropFirst("--steam-smoke-test=".count)) {
                 didStartDesktopSmokeTest = true
+                LaunchLogFile.append("automation", "Requested Steam diagnostic launch for app \(appID)")
                 do {
                     try model.selectInstalledSteamGame(appID: appID)
                     await startLaunch()
@@ -176,6 +187,17 @@ struct ContentView: View {
                         }
                     }
                     if model.manifest != nil {
+                        if model.selectedSteamAppID == 2868840 {
+                            Toggle(L("Experimental compatibility renderer", "Experimenteller Kompatibilitätsrenderer"),
+                                   isOn: $sts2AngleCompatibility)
+                                .disabled(!model.canChangeSelection || (!model.angleCompatibilityAvailable && !sts2AngleCompatibility))
+                            Text(model.angleCompatibilityAvailable
+                                 ? L("Applies the next time you start Slay the Spire 2. Gameplay compatibility is still being tested.",
+                                     "Gilt beim nächsten Start von Slay the Spire 2. Die Spielkompatibilität wird noch getestet.")
+                                 : L("Verified compatibility files must be installed before enabling this renderer.",
+                                     "Vor dem Aktivieren müssen geprüfte Kompatibilitätsdateien installiert werden."))
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
                         Picker(L("Display", "Anzeige"), selection: $model.presentationModeDraft) {
                             Text(L("Immersive VR", "Immersives VR")).tag(WindowsPresentationMode.immersiveVR)
                             Text(L("Desktop window", "Desktop-Fenster")).tag(WindowsPresentationMode.desktop)
@@ -313,6 +335,19 @@ struct ContentView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section(L("Advanced rendering", "Erweitertes Rendering")) {
+                    Toggle(L("Performance diagnostics (restart app)", "Leistungsdiagnose (App neu starten)"), isOn: $performanceDiagnostics)
+                        .disabled(!model.canChangeSelection)
+
+                    Picker(L("Hardware preset", "Hardware-Profil"), selection: $model.renderingPresetDraft) {
+                        Text(L("Automatic (baseline)", "Automatisch (Basis)")).tag(WindowsVRRenderingPreset.automatic)
+                        Text(L("M5 quality (experimental)", "M5-Qualität (experimentell)")).tag(WindowsVRRenderingPreset.m5Quality)
+                    }
+                    .disabled(!model.canChangeSelection)
+                    Text(L("M5 quality uses at least 2048×1920 per eye on supported GPUs. Applies next launch; saved with the game profile. Other GPUs retain the baseline. Higher resolution costs GPU time and memory.", "M5-Qualität nutzt auf unterstützten GPUs mindestens 2048×1920 pro Auge. Gilt beim nächsten Start und wird im Spielprofil gespeichert. Andere GPUs behalten die Basisgröße. Höhere Auflösung kostet GPU-Zeit und Speicher."))
+                        .font(.footnote).foregroundStyle(.secondary)
+                    Text("GPU: \(model.hardwareCapabilities.deviceName) · Apple \(model.hardwareCapabilities.appleGPUFamily)")
+                        .font(.footnote).foregroundStyle(.secondary)
+
                     Slider(value: $internalRenderScale, in: 0.5...1, step: 0.05) {
                         Text(L("Internal render scale", "Interne Render-Skalierung"))
                     }

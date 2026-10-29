@@ -1,0 +1,63 @@
+--- a/build/ntdll-unix/virtual_ios.c
++++ b/build/ntdll-unix/virtual_ios.c
+@@ -12283,6 +12283,42 @@
+ }
+ 
+ 
++/* A non-image pagefile section in an ARM64EC process contains guest x64
++ * bytes unless explicitly marked as native code. Keep its file-backed shared
++ * pages: copying an executable view to the native JIT pool severs coherence
++ * with MapViewOfFile's writable view (CoreCLR executable allocator).
++ *
++ * This only removes host EXEC. Wine's executable protection and FEX's map /
++ * protect / FlushInstructionCache notifications remain authoritative. Native
++ * EC allocations, images, file assets, pool ranges and existing aliases keep
++ * their original paths. virtual_mutex is held by callers. */
++static int ios_guest_shared_section_is_host_data( const void *base, size_t size )
++{
++#ifdef WINE_IOS
++    uintptr_t b = (uintptr_t)base, e = b + size, a;
++    uintptr_t rx = (uintptr_t)ios_jit_rx_base_global;
++    uintptr_t rw = (uintptr_t)ios_jit_rw_base_global;
++    uintptr_t overlap_start, overlap_end;
++    if (!arm64ec_view || ios_alloc_ec_code || !size || e <= b) return 0;
++    if ((rx && b < rx + ios_jit_pool_size_global && e > rx) ||
++        (rw && b < rw + ios_jit_pool_size_global && e > rw)) return 0;
++    if (ios_jit_anon_alias_overlaps( (void *)base, size, &overlap_start, &overlap_end )) return 0;
++    for (a = b; a < e; )
++    {
++        struct file_view *view = find_view( (const void *)a, 1 );
++        uintptr_t end;
++        if (!view || !(view->protect & (SEC_RESERVE | SEC_COMMIT)) ||
++            (view->protect & (SEC_IMAGE | SEC_FILE | VPROT_ARM64EC | VPROT_SYSTEM | VPROT_WRITECOPY))) return 0;
++        end = (uintptr_t)view->base + view->size;
++        if (end <= a) return 0;
++        a = end;
++    }
++    return 1;
++#else
++    return 0;
++#endif
++}
++
+ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
+ {
+ #ifdef WINE_IOS
+@@ -12352,6 +12388,17 @@
+         if (!unix_prot) unix_prot = PROT_READ;
+     }
+ 
++#endif
++
++#ifdef WINE_IOS
++    if ((unix_prot & PROT_EXEC) && ios_guest_shared_section_is_host_data( base, size ))
++    {
++        /* Do not replace a shared section with an unrelated anonymous pool
++         * mapping. Its second view must see copies and patches immediately,
++         * even before FlushInstructionCache. */
++        unix_prot &= ~PROT_EXEC;
++        if (!unix_prot) unix_prot = PROT_READ;
++    }
+ #endif
+ 
+     /* ml247: catch WHO narrows maxprot on pool pages.

@@ -1,0 +1,57 @@
+--- a/build/ntdll-unix/virtual_ios.c
++++ b/build/ntdll-unix/virtual_ios.c
+@@ -15451,6 +15451,7 @@
+ static SIZE_T get_committed_size( struct file_view *view, void *base, size_t max_size, BYTE *vprot, BYTE vprot_mask )
+ {
+     SIZE_T offset, size;
++    unsigned int query_status;
+ 
+     base = ROUND_ADDR( base, page_mask );
+     offset = (char *)base - (char *)view->base;
+@@ -15465,7 +15466,8 @@
+         {
+             req->base   = wine_server_client_ptr( view->base );
+             req->offset = offset;
+-            if (!wine_server_call( req ))
++            query_status = wine_server_call( req );
++            if (!query_status)
+             {
+                 size = min( reply->size, max_size );
+                 if (reply->committed)
+@@ -15477,6 +15479,22 @@
+         }
+         SERVER_END_REQ;
+ 
++#ifdef WINE_IOS
++        /* Pseudo-processes share the host view tree, but wineserver records
++         * SEC_RESERVE mappings per Windows process. A sibling's physical view
++         * therefore has no mapping in this caller's server process. Query its
++         * existing local protections without inventing commit state or changing
++         * any page permissions. Never return a successful zero-length region.
++         * virtual_mutex keeps the local view and its vprot bytes stable. */
++        if (query_status == STATUS_NOT_MAPPED_VIEW && offset < view->size)
++        {
++            static unsigned int reports;
++            size = min( view->size - offset, max_size );
++            if (__sync_add_and_fetch( &reports, 1 ) <= 16)
++                dprintf( 2, "[shared-view-query] local range base=%p view=%p offset=%#lx size=%#lx status=%08x\n",
++                         base, view->base, (unsigned long)offset, (unsigned long)size, query_status );
++        }
++#endif
+         if (!size || !(vprot_mask & ~VPROT_COMMITTED)) return size;
+     }
+     else size = min( view->size - offset, max_size );
+@@ -24971,6 +24989,13 @@
+ 
+         info->AllocationBase = alloc_base;
+         info->RegionSize = get_committed_size( view, base, ~(size_t)0, &vprot, ~VPROT_WRITEWATCH );
++#ifdef WINE_IOS
++        if (!info->RegionSize)
++        {
++            server_leave_uninterrupted_section( &virtual_mutex, &sigset );
++            return STATUS_INVALID_ADDRESS;
++        }
++#endif
+         info->State = (vprot & VPROT_COMMITTED) ? MEM_COMMIT : MEM_RESERVE;
+         info->Protect = (vprot & VPROT_COMMITTED) ? get_win32_prot( vprot, view->protect ) : 0;
+         info->AllocationProtect = get_win32_prot( view->protect, view->protect );

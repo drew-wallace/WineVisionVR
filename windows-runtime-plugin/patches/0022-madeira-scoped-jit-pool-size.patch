@@ -1,0 +1,31 @@
+--- a/app/Madeira/FEXBridge.mm
++++ b/app/Madeira/FEXBridge.mm
+@@ -81,6 +81,19 @@
+ // patching only an allocation instruction would leave those contracts apart.
+ // This remains a one-session, non-reclaiming pool; device memory limits apply.
+ static constexpr size_t JIT_POOL_SIZE = 640ULL * 1024 * 1024;
++
++// A game-scoped host setting may request extra capacity. Keep one validated
++// size for debugger allocation, RW remapping and the exported RX/RW bounds.
++static size_t jit_pool_size_for_override(const char *value) {
++    if (!value || !*value) return JIT_POOL_SIZE;
++    unsigned mib = 0;
++    for (const char *p = value; *p; ++p) {
++        if (*p < '0' || *p > '9' || mib > 1024) return JIT_POOL_SIZE;
++        mib = mib * 10 + static_cast<unsigned>(*p - '0');
++    }
++    if (mib < 640 || mib > 1024 || mib % 64 != 0) return JIT_POOL_SIZE;
++    return static_cast<size_t>(mib) * 1024 * 1024;
++}
+ static constexpr size_t JIT_PAGE_SIZE = 0x4000; // 16KB iOS pages
+ 
+ static void *g_jit_rx_base = nullptr;  // Executable view
+@@ -123,7 +136,7 @@
+         return false;
+     }
+ 
+-    size_t size = JIT_POOL_SIZE;
++    size_t size = jit_pool_size_for_override(getenv("WVR_JIT_POOL_MIB"));
+     mach_port_t task = mach_task_self();
+ 
+     // Step 1: Ask debugger to allocate RX pages

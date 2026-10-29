@@ -20,11 +20,18 @@ final class SessionDiagnostics: @unchecked Sendable {
         let runtimeBuildID: String?
         let profileID: String?
         let profileName: String?
+        let hardware: WindowsVRHardwareCapabilities?
+        let renderingPreset: String?
+        let eyeWidth: Int?
+        let eyeHeight: Int?
+        let synthesisMode: Int?
 
         init(title: String, manifestID: String, steamAppID: Int? = nil,
              steamLaunchOptionID: Int? = nil, architecture: String, graphics: String,
              renderScale: Double, appVersion: String, buildNumber: String,
-             runtimeBuildID: String? = nil, profileID: String? = nil, profileName: String? = nil) {
+             runtimeBuildID: String? = nil, profileID: String? = nil, profileName: String? = nil,
+             hardware: WindowsVRHardwareCapabilities? = nil, renderingPreset: String? = nil,
+             eyeWidth: Int? = nil, eyeHeight: Int? = nil, synthesisMode: Int? = nil) {
             self.title = Self.limit(title)
             self.manifestID = Self.limit(manifestID)
             self.steamAppID = steamAppID
@@ -37,6 +44,11 @@ final class SessionDiagnostics: @unchecked Sendable {
             self.runtimeBuildID = runtimeBuildID.map(Self.limit)
             self.profileID = profileID.map(Self.limit)
             self.profileName = profileName.map(Self.limit)
+            self.hardware = hardware
+            self.renderingPreset = renderingPreset
+            self.eyeWidth = eyeWidth
+            self.eyeHeight = eyeHeight
+            self.synthesisMode = synthesisMode
         }
 
         private static func limit(_ value: String) -> String { String(value.prefix(256)) }

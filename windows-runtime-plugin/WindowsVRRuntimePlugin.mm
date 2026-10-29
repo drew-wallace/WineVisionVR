@@ -926,6 +926,13 @@ int32_t RunRequest(LaunchRequest request) {
         return -1;
     }
     if (!nativeARM64) {
+        // Pool creation precedes the general guest-environment handoff below.
+        // Apply this host allocation setting before fex_initialize reads it.
+        const auto poolSize = std::find_if(request.environment.begin(), request.environment.end(),
+            [](const auto &entry) { return entry.first == "WVR_JIT_POOL_MIB"; });
+        if (poolSize != request.environment.end()) {
+            SetLaunchEnvironment("WVR_JIT_POOL_MIB", poolSize->second.c_str());
+        }
         if (!fex_initialize()) {
             SetError("Madeira FEXCore initialization failed while preparing its dual-mapped JIT pool.");
             return -1;

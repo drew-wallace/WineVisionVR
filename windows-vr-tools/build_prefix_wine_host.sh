@@ -131,6 +131,10 @@ if [[ "$TOOLS_ONLY" == 1 ]]; then
     # complete second Wine installation. makedep was built by configure.
     make -C "$BUILD" -j"$JOBS" __tooldeps__ \
         2>&1 | tee "$BUILD_ROOT/build-tools.log"
+    # Cross builds execute this native wrc, which resolves NLS data relative
+    # to its own build tree. __tooldeps__ does not stage those data files.
+    make -C "$BUILD" -j"$JOBS" nls/all \
+        2>&1 | tee -a "$BUILD_ROOT/build-tools.log"
     for tool in install makedep make_xftmpl sfnt2fon/sfnt2fon wine/wine \
                 winebuild/winebuild winegcc/winegcc widl/widl wrc/wrc wmc/wmc; do
         [[ -x "$BUILD/tools/$tool" ]] || {

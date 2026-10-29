@@ -274,12 +274,12 @@ FfxFloat32 RGBToPerceivedLuma(FfxFloat32x3 fLinearRgb)
 
 FfxFloat32x3 Tonemap(FfxFloat32x3 fRgb)
 {
-    return fRgb / (ffxMax(ffxMax(0.f, fRgb.r), ffxMax(fRgb.g, fRgb.b)) + 1.f).xxx;
+    return fRgb / FfxFloat32x3(ffxMax(ffxMax(0.f, fRgb.r), ffxMax(fRgb.g, fRgb.b)) + 1.f);
 }
 
 FfxFloat32x3 InverseTonemap(FfxFloat32x3 fRgb)
 {
-    return fRgb / ffxMax(FSR3UPSCALER_TONEMAP_EPSILON, 1.f - ffxMax(fRgb.r, ffxMax(fRgb.g, fRgb.b))).xxx;
+    return fRgb / FfxFloat32x3(ffxMax(FSR3UPSCALER_TONEMAP_EPSILON, 1.f - ffxMax(fRgb.r, ffxMax(fRgb.g, fRgb.b))));
 }
 
 FfxBoolean IsUvInside(FfxFloat32x2 fUv)

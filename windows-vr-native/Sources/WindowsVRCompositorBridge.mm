@@ -980,12 +980,20 @@ extern "C" WVR_COMPOSITOR_EXPORT int32_t wvr_compositor_publish_frame_tracking_v
                 auto periods = bridge.displayPeriods;
                 std::sort(periods.begin(), periods.begin() + bridge.displayPeriodCount);
                 bridge.displayPeriodNanoseconds = periods[bridge.displayPeriodCount / 2];
+            } else {
+                bridge.displayPeriodCount = bridge.displayPeriodNext = 0;
             }
         }
         bridge.lastDisplayPublishTimestamp = timestampNanoseconds;
         bridge.trackingHistory[bridge.trackingHistoryNext] = bridge.tracking;
         bridge.trackingHistoryNext = (bridge.trackingHistoryNext + 1) % bridge.trackingHistory.size();
         bridge.trackingHistoryCount = std::min(bridge.trackingHistoryCount + 1, bridge.trackingHistory.size());
+    } else {
+        // Preserve the last measured period, but never mix timing/pose samples
+        // from before a tracking interruption with a resumed display cadence.
+        bridge.lastDisplayPublishTimestamp = 0;
+        bridge.displayPeriodCount = bridge.displayPeriodNext = 0;
+        bridge.trackingHistoryCount = bridge.trackingHistoryNext = 0;
     }
     os_unfair_lock_unlock(&bridge.lock);
     return WVRCompositorStatusOK;

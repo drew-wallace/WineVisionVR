@@ -2,6 +2,10 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include <mach/mach_time.h>
+#include <mach/mach.h>
+#include <os/proc.h>
+#include <TargetConditionals.h>
+#include <algorithm>
 #import <objc/runtime.h>
 #import <CommonCrypto/CommonDigest.h>
 #import "WindowsVRMetalDiagnostics.h"
@@ -9,6 +13,35 @@
 #include <chrono>
 #include <array>
 #include <cstdio>
+
+extern "C" int wvr_metal_copy_resource_statistics(void *devicePointer, char *buffer, uint32_t capacity) {
+    if (!devicePointer || !buffer || !capacity) return 0;
+    id<MTLDevice> device = (__bridge id<MTLDevice>)devicePointer;
+    task_vm_info_data_t vm{};
+    mach_msg_type_number_t vmCount = TASK_VM_INFO_COUNT;
+    const bool haveVM = task_info(mach_task_self(), TASK_VM_INFO,
+        reinterpret_cast<task_info_t>(&vm), &vmCount) == KERN_SUCCESS;
+    task_absolutetime_info_data_t cpu{};
+    mach_msg_type_number_t cpuCount = TASK_ABSOLUTETIME_INFO_COUNT;
+    const bool haveCPU = task_info(mach_task_self(), TASK_ABSOLUTETIME_INFO,
+        reinterpret_cast<task_info_t>(&cpu), &cpuCount) == KERN_SUCCESS;
+    mach_timebase_info_data_t timebase{};
+    mach_timebase_info(&timebase);
+    const double cpuSeconds = haveCPU ? double(cpu.total_user + cpu.total_system) *
+        double(timebase.numer) / double(timebase.denom) / 1e9 : -1;
+#if TARGET_OS_OSX
+    const long long availableMemory = -1; // This query is unavailable on macOS.
+#else
+    const long long availableMemory = static_cast<long long>(os_proc_available_memory());
+#endif
+    const int n = snprintf(buffer, capacity,
+        "processCPUSeconds=%.6f physicalFootprintBytes=%lld gpuAllocatedBytes=%llu recommendedGPUWorkingSetBytes=%llu availableProcessMemoryBytes=%lld",
+        cpuSeconds, haveVM ? static_cast<long long>(vm.phys_footprint) : -1LL,
+        static_cast<unsigned long long>(device.currentAllocatedSize),
+        static_cast<unsigned long long>(device.recommendedMaxWorkingSetSize),
+        availableMemory);
+    return n < 0 ? 0 : static_cast<int>(std::min<uint32_t>(n, capacity - 1));
+}
 #ifndef WVR_SOURCE_AIR_WRITER
 #define WVR_SOURCE_AIR_WRITER 0
 #endif

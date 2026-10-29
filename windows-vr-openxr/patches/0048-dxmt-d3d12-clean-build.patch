@@ -1,0 +1,29 @@
+--- a/src/d3d12/d3d12_command_queue.cpp
++++ b/src/d3d12/d3d12_command_queue.cpp
+@@ -30,7 +30,7 @@
+ #include <unordered_map>
+ #include "WindowsVRD3D12CommandQueueExt.h"
+ #include "WindowsVRWMTBridge.h"
+-#include "WindowsVRGuestFoveation.h"
++// WindowsVRCompositorBridge.h already supplies the shared foveation wire types.
+ #include "d3d10_1.h"
+ #include "d3d11_4.h"
+ 
+@@ -293,7 +293,7 @@
+           // eye 0 keeps its own root arguments, eye 1 gets those of b at the EYE1 slot
+           Append(Clone(ca, size));
+           auto eye1 = (wmtcmd_render_setbuffer *)Allocate(sizeof(wmtcmd_render_setbuffer));
+-          eye1->type = ca->type;
++          eye1->type = static_cast<WMTRenderCommandType>(ca->type);
+           eye1->buffer = bb->buffer;
+           eye1->offset = bb->offset;
+           eye1->index = SM50_BINDING_INDEX_ROOT_ARGUMENTS_EYE1;
+@@ -459,7 +459,7 @@
+ 
+ public:
+   MTLD3D12CommandQueueImpl(MTLD3D12Device *pDevice) :
+-      MTLD3D12Pageable<MTLD3D12CommandQueue, IMTLSwapChainFactory, IMTLD3D12CommandQueueExt>(pDevice),
++      MTLD3D12Pageable<MTLD3D12CommandQueue, IMTLSwapChainFactory, IMTLD3D12CommandQueueExt, IMTLD3D12CommandQueueExt2>(pDevice),
+       inflight_cmdbuf_wait_thread_([this]() { this->CommandBufferWaitingThread(); }) {}
+ 
+   ~MTLD3D12CommandQueueImpl() {

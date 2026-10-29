@@ -54,6 +54,17 @@ int main(){@autoreleasepool{
  assert(query(1).displayPeriodNanoseconds==10000000);
  pose(1110000000); // Three display ticks missed; keep the 100 Hz cadence.
  assert(query(1).displayPeriodNanoseconds==10000000);
+ uint64_t stamp=2000000000;
+ for(uint64_t hz : {90u,96u,100u,120u,90u}) {
+   const uint64_t period=1000000000/hz;
+   for(int i=0;i<16;++i){stamp+=period;pose(stamp);}
+   assert(query(1).displayPeriodNanoseconds==period);
+   stamp+=3*period;pose(stamp); // Missed ticks must not lower the advertised rate.
+   assert(query(1).displayPeriodNanoseconds==period);
+   float head[16]{},eyes[32]{},projection[32]{},fov[8]{},depth[2]{.1f,100.f};
+   assert(wvr_compositor_publish_frame_tracking_v1(stamp,0,head,eyes,projection,fov,depth)==0);
+   assert(!(query(1).tracking.flags&WVRDevicePoseTracked));
+ }
  auto bad=query(1);bad.structSize--;assert(wvr_compositor_frame_state_v1(&bad)==WVRCompositorStatusUnsupportedABI);
  puts("PASS: coherent native frame state, bounded real-pose waits, duplicate suppression, 100 publication races, resize, pause, exit and ABI rejection");
 }}

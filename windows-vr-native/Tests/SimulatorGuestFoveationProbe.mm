@@ -30,6 +30,7 @@ static WVRGuestFoveationPassV1 request(id<MTLCommandBuffer> cb,
   r.abiVersion = WVR_GUEST_FOVEATION_ABI;
   r.structSize = sizeof(r);
   r.operation = 1;
+  r.arrayLength = 1;
   r.flags = WVR_GUEST_FOVEATION_SAFE_SHADER;
   r.drawCalls = 1;
   r.width = 256;

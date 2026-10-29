@@ -9,6 +9,9 @@ void wvr_metal_shader_compatibility_install(int capture);
 // Opt-in submission/completion timing; does not change GPU scheduling.
 void wvr_metal_gpu_statistics_install(void);
 int wvr_metal_copy_gpu_statistics(char *buffer, uint32_t capacity);
+// Bounded process CPU, physical footprint and GPU allocation snapshot. CPU time
+// covers all threads (including terminated threads), not guest simulation alone.
+int wvr_metal_copy_resource_statistics(void *device, char *buffer, uint32_t capacity);
 // Copies the first fatal compiler-service error; zero means no recorded error.
 int wvr_metal_copy_compiler_failure(char *buffer, uint32_t capacity);
 #ifdef __cplusplus

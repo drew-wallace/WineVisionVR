@@ -17,9 +17,13 @@ struct LaunchLog {
     }
 }
 
-/// Diagnostics that write files or trace the bridge are off unless the app's Info.plist sets `WVRDiagnostics`.
+/// Full tracing is opt-in through Info.plist; bounded performance summaries have
+/// a separate persisted preference sampled once at process startup.
 enum LaunchDiagnostics {
+    // Explicit device-test opt-in; normal launches never select a game automatically.
+    static let automatedLaunchEnabled = enabled || ProcessInfo.processInfo.environment["WVR_AUTOMATED_LAUNCH"] == "1"
     static let frameCaptureEnabled = (Bundle.main.object(forInfoDictionaryKey: "WVRFrameCapture") as? Bool) ?? false
+    static let performanceEnabled: Bool = enabled || UserDefaults.standard.bool(forKey: "WVRPerformanceDiagnostics")
     static let enabled: Bool = (Bundle.main.object(forInfoDictionaryKey: "WVRDiagnostics") as? Bool) ?? false
 }
 
@@ -35,7 +39,10 @@ enum LaunchLogFile {
     }()
 
     static func append(_ level: String, _ message: String) {
-        guard LaunchDiagnostics.enabled || (level == "reconstruction" && UserDefaults.standard.bool(forKey: "WVRReconstructionValidation")), let url else { return }
+        // Keep startup/failure evidence even with performance tracing disabled.
+        // These milestones are infrequent; per-frame diagnostics remain opt-in.
+        let isLaunchMilestone = level == "notice" || level == "error"
+        guard isLaunchMilestone || LaunchDiagnostics.performanceEnabled || (level == "reconstruction" && UserDefaults.standard.bool(forKey: "WVRReconstructionValidation")), let url else { return }
         lock.lock(); defer { lock.unlock() }
         let line = "\(formatter.string(from: Date())) [\(level)] \(message)\n"
         let fm = FileManager.default

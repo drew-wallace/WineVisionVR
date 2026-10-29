@@ -3,6 +3,10 @@ options:
   minimumXcodeGenVersion: 2.38.0
   deploymentTarget:
     visionOS: "27.0"
+settings:
+  base:
+    CURRENT_PROJECT_VERSION: "18"
+    MARKETING_VERSION: "0.1.0"
 packages:
   WindowsVRCore:
     path: ../windows-vr
@@ -28,8 +32,6 @@ targets:
         OTHER_LDFLAGS: ["$(inherited)", "-lz", "-llzma"]
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
-        INFOPLIST_KEY_WVRUniformEyeWidth: 1920
-        INFOPLIST_KEY_WVRUniformEyeHeight: 1792
         CODE_SIGN_STYLE: Automatic
         CODE_SIGN_IDENTITY: Apple Development
         # Increased Memory Limit, the same single memory entitlement Madeira ships (its
@@ -43,7 +45,12 @@ targets:
     info:
       path: Generated-Info.plist
       properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        WVRUniformEyeWidth: 1888
+        WVRUniformEyeHeight: 1792
         LSApplicationQueriesSchemes: [stikdebug, stikjit]
+        WVRDiagnostics: false
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         GCSupportsControllerUserInteraction: true
@@ -139,6 +146,8 @@ targets:
       - sdk: Metal.framework
       - sdk: AVFAudio.framework
       - sdk: MetalFX.framework
+      - sdk: CoreML.framework
+      - sdk: CoreVideo.framework
     sources:
       - path: ../windows-vr-native/Sources
       - path: ../windows-vr-native/include
@@ -150,8 +159,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.avpplay.windows-vr.native-bridge
         MTL_HEADER_SEARCH_PATHS: $(SRCROOT)/../windows-vr-native/third-party/fidelityfx/gpu
-        # Texture atomics (FSR depth reprojection, SPD counter) need MSL 3.1.
-        MTL_LANGUAGE_REVISION: Metal31
+        # FSR SPD uses device-scope acquire/release fences exposed by MSL 4.
+        MTL_LANGUAGE_REVISION: Metal40
         EXPORTED_SYMBOLS_FILE: $(SRCROOT)/../windows-vr-native/shader-compiler/NativeBridge.exports
         GENERATE_INFOPLIST_FILE: YES
         CLANG_ENABLE_OBJC_ARC: YES

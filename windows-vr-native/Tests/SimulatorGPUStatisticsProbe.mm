@@ -54,5 +54,11 @@ int main(){ @autoreleasepool {
     if(!good || !wvr_metal_copy_gpu_statistics(report,sizeof(report)) ||
        !strstr(report,"guest submitted=257 completed=257 failed=0") || !strstr(report,"untracked=0"))return 9;
     puts(report);
-    puts("PASS: actual Metal commits/completions classified; window timings retire once; 256 concurrent slot reuses preserve GPU output");
+    if(!wvr_metal_copy_resource_statistics((__bridge void *)device,report,sizeof(report)) ||
+       !strstr(report,"processCPUSeconds=") || !strstr(report,"physicalFootprintBytes=") ||
+       !strstr(report,"gpuAllocatedBytes="))return 10;
+    puts(report);
+    char bounded[8]={};
+    if(wvr_metal_copy_resource_statistics((__bridge void *)device,bounded,sizeof(bounded))!=7 || bounded[7]!=0)return 11;
+    puts("PASS: actual Metal commits/completions classified; window timings retire once; 256 concurrent slot reuses preserve GPU output; resource telemetry is bounded");
 }}

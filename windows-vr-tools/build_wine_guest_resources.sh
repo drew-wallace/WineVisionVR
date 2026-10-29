@@ -96,7 +96,9 @@ JOBS="${AVPPLAY_BUILD_JOBS:-4}" bash "$runtime_root/build/wine-pe/build-modules.
     shdocvw urlmon windowscodecs winspool.drv wintrust \
     advpack compstui hid imagehlp mf netutils rtworkq wined3d \
     dbghelp evr opengl32 d3d9 dxva2 glu32 ieframe sspicli psapi \
-    dwmapi wsock32 avrt vcruntime140 msvcp140 mmdevapi
+    dwmapi wsock32 avrt vcruntime140 msvcp140 mmdevapi \
+    dwrite uiautomationcore oleacc uxtheme msimg32 schannel dsound \
+    dcomp ktmw32 mscoree
 # Create the four core Wine executables as ARM64EC PE files, then strip only
 # debug sections before placing them in the guest farm.
 core_program_targets=(

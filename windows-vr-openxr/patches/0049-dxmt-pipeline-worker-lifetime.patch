@@ -1,0 +1,65 @@
+--- a/src/dxmt/dxmt_tasks.hpp
++++ b/src/dxmt/dxmt_tasks.hpp
+@@ -23,6 +23,7 @@
+ 
+   task_scheduler();
+   ~task_scheduler();
++  void shutdown();
+ 
+   uint64_t
+   get_running_threads() {
+@@ -60,7 +61,16 @@
+ }
+ 
+ template <typename Task> task_scheduler<Task>::~task_scheduler() {
+-  destroyed.store(true);
++  shutdown();
++}
++
++// Call before destroying objects referenced by queued or running tasks. The
++// owning cache invokes this once; the destructor may safely invoke it again.
++template <typename Task> void task_scheduler<Task>::shutdown() {
++  {
++    std::unique_lock<dxmt::mutex> lock(worker_mutex_);
++    destroyed.store(true);
++  }
+   worker_cond_.notify_all();
+ 
+   for (auto &worker : workers_) {
+@@ -141,6 +151,7 @@
+ void
+ task_scheduler<Task>::submit(Task task) {
+   std::unique_lock<dxmt::mutex> lock(worker_mutex_);
++  if (destroyed.load()) return;
+   task_queue_.push(task);
+ 
+   if (running.load(std::memory_order_relaxed) == threads && threads < max_threads) {
+@@ -155,6 +166,7 @@
+ void
+ task_scheduler<Task>::submit_low(Task task) {
+   std::unique_lock<dxmt::mutex> lock(worker_mutex_);
++  if (destroyed.load()) return;
+   task_low_queue_.push_back(task);
+   worker_cond_.notify_one();
+ }
+@@ -164,6 +176,7 @@
+ void
+ task_scheduler<Task>::promote(Task task) {
+   std::unique_lock<dxmt::mutex> lock(worker_mutex_);
++  if (destroyed.load()) return;
+   for (auto it = task_low_queue_.begin(); it != task_low_queue_.end(); ++it) {
+     if (*it == task) {
+       task_low_queue_.erase(it);
+--- a/src/d3d11/d3d11_pipeline_cache.cpp
++++ b/src/d3d11/d3d11_pipeline_cache.cpp
+@@ -999,6 +999,10 @@
+     warmup_cancel_.store(true);
+     if (warmup_thread_.joinable())
+       warmup_thread_.join();
++    // scheduler_ is declared before the task-owning caches and would otherwise
++    // be destroyed after them. Join running compiles while their shader,
++    // pipeline, device and blend references are still alive.
++    scheduler_.shutdown();
+     for (auto *blend : warm_blend_refs_)
+       blend->Release();
+   }

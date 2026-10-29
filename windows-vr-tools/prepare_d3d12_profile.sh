@@ -103,6 +103,11 @@ patches=[
  "windows-vr-openxr/patches/0045-dxmt-precise-cbuffer-dirty.patch",
  "windows-vr-openxr/patches/0046-dxmt-batch-use-resource.patch",
  "windows-vr-openxr/patches/0047-dxmt-precise-vb-dirty.patch",
+ "windows-vr-openxr/patches/0048-dxmt-d3d12-clean-build.patch",
+ "windows-vr-openxr/patches/0049-dxmt-pipeline-worker-lifetime.patch",
+ "windows-vr-openxr/patches/0050-dxmt-safe-texture-compression.patch",
+ "windows-vr-openxr/patches/0051-dxmt-sdr-presentation-format.patch",
+ "windows-vr-openxr/patches/0052-dxmt-mobile-display-query-outputs.patch",
 ]
 subprocess.run(["git","init","--quiet"],cwd=dest,check=True)
 for rel in patches:

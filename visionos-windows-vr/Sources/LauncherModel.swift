@@ -61,6 +61,8 @@ final class LauncherModel {
     private(set) var transferredGames: [TransferredWindowsVRGame] = []
     private var steamSelection: (game: DockGame, option: UInt32)?
     private(set) var transferImportError: String?
+    var renderingPresetDraft: WindowsVRRenderingPreset = .automatic
+    let hardwareCapabilities = WindowsVRHardwareCapabilities.current
     var renderScaleDraft: Float = 1
     var presentationModeDraft: WindowsPresentationMode = .immersiveVR
     private(set) var desktopPresentationVisible = false
@@ -69,6 +71,7 @@ final class LauncherModel {
     var launchArgumentsText = "[]"
     var isShowingImportError = false
     private(set) var importError: String?
+    private(set) var angleCompatibilityAvailable = false
 
     @ObservationIgnored private let runtime = NativePluginWindowsRuntime(frameworkName: Bundle.main.object(forInfoDictionaryKey: "WVRRuntimePluginFramework") as? String ?? "WindowsRuntimePlugin.framework")
     @ObservationIgnored private let jitCoordinator = JITCoordinator()
@@ -89,6 +92,8 @@ final class LauncherModel {
         // Recover the previous attempt before cleanup or a new launch can
         // rotate its global runtime log.
         if let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+            angleCompatibilityAvailable = WindowsVRAngleTrial.hasCachedAssets(in: documents)
+            WindowsVRAngleTrial.adoptInstalledProfile(available: angleCompatibilityAvailable)
             do {
                 let diagnostics = try SessionDiagnostics(documentsDirectory: documents)
                 try diagnostics.recoverPendingAttempt()
@@ -108,6 +113,16 @@ final class LauncherModel {
     }
 
     var selectedSteamAppID: Int? { steamSelection?.game.id }
+
+    func recoverAngleTrialIfIdle() {
+        guard !isLaunching, !hasAcceptedLaunch, wine_process_is_running() == 0, wineserver_is_running() == 0,
+              let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        do {
+            try WindowsVRAngleTrial.recover(drive: MadeiraDock.drive, ledger: WindowsVRAngleTrial.ledger(in: documents))
+        } catch {
+            launchLog.error("ANGLE trial recovery preserved files: \(error.localizedDescription)")
+        }
+    }
 
     var canLaunch: Bool {
         guard manifest != nil, gameDirectory != nil,
@@ -194,6 +209,7 @@ final class LauncherModel {
             selectedLibraryEntryID = nil
             selectedProfileID = nil
             renderScaleDraft = 1
+            renderingPresetDraft = .automatic
             profileNameDraft = L("Default", "Standard")
             launchError = nil
         } catch {
@@ -288,6 +304,7 @@ final class LauncherModel {
         selectedLibraryEntryID = nil
         selectedProfileID = nil
         renderScaleDraft = 1
+        renderingPresetDraft = .automatic
         profileNameDraft = L("Default", "Standard")
         launchArgumentsText = Self.argumentText(game.manifest.launchArguments)
         launchError = nil
@@ -313,7 +330,8 @@ final class LauncherModel {
             launchArguments: draftArguments,
             environment: manifest.environment,
             renderScale: renderScaleDraft,
-            presentation: presentationModeDraft
+            presentation: presentationModeDraft,
+            renderingPreset: renderingPresetDraft
         )
         var updated = library
         if let index = updated.firstIndex(where: { $0.manifest.id == manifest.id }) {
@@ -373,11 +391,13 @@ final class LauncherModel {
             if let profile {
                 manifest = try profile.applying(to: entry.manifest)
                 renderScaleDraft = profile.renderScale
+                renderingPresetDraft = profile.renderingPreset ?? .automatic
                 presentationModeDraft = profile.presentation
                 profileNameDraft = profile.name
                 launchArgumentsText = Self.argumentText(profile.launchArguments)
             } else {
                 renderScaleDraft = 1
+                renderingPresetDraft = .automatic
                 profileNameDraft = L("Default", "Standard")
                 launchArgumentsText = Self.argumentText(entry.manifest.launchArguments)
             }
@@ -442,6 +462,7 @@ final class LauncherModel {
         manifest = try profile.applying(to: entry.manifest)
         selectedProfileID = profile.id
         renderScaleDraft = profile.renderScale
+        renderingPresetDraft = profile.renderingPreset ?? .automatic
         presentationModeDraft = profile.presentation
         profileNameDraft = profile.name
         launchArgumentsText = Self.argumentText(profile.launchArguments)
@@ -475,7 +496,8 @@ final class LauncherModel {
             launchArguments: arguments,
             environment: baseManifest.environment,
             renderScale: renderScaleDraft,
-            presentation: presentationModeDraft
+            presentation: presentationModeDraft,
+            renderingPreset: renderingPresetDraft
         )
         var updated = library
         guard let index = updated.firstIndex(where: { $0.id == entry.id }) else {
@@ -491,6 +513,7 @@ final class LauncherModel {
         try persist(updated)
         selectedProfileID = profile.id
         renderScaleDraft = profile.renderScale
+        renderingPresetDraft = profile.renderingPreset ?? .automatic
         presentationModeDraft = profile.presentation
         profileNameDraft = profile.name
         manifest = try profile.applying(to: updated[index].manifest)
@@ -514,6 +537,7 @@ final class LauncherModel {
         if let profile = updated[index].selectedProfile {
             manifest = try profile.applying(to: updated[index].manifest)
             renderScaleDraft = profile.renderScale
+            renderingPresetDraft = profile.renderingPreset ?? .automatic
             presentationModeDraft = profile.presentation
             profileNameDraft = profile.name
             launchArgumentsText = Self.argumentText(profile.launchArguments)
@@ -521,6 +545,7 @@ final class LauncherModel {
             manifest = updated[index].manifest
             presentationModeDraft = updated[index].manifest.presentation
             renderScaleDraft = 1
+            renderingPresetDraft = .automatic
             profileNameDraft = L("Default", "Standard")
             launchArgumentsText = Self.argumentText(updated[index].manifest.launchArguments)
         }
@@ -542,6 +567,7 @@ final class LauncherModel {
             gameFolderName = nil
             launchArgumentsText = "[]"
             renderScaleDraft = 1
+            renderingPresetDraft = .automatic
             profileNameDraft = L("Default", "Standard")
         }
     }
@@ -571,7 +597,9 @@ final class LauncherModel {
     /// CPU acceleration disabled. Keep this workaround local to that game;
     /// the underlying CPU/emulator fault has not been established.
     nonisolated static func steamCompatibilityEnvironment(appID: Int, base: [String: String] = [:]) -> [String: String] {
-        var environment = base
+        var environment = WindowsVRTranslationEnvironment.compatibilityEnvironment(
+            steamAppID: appID, base: base,
+            inheritedCacheOverride: WindowsVRTranslationEnvironment.inheritedCodeCacheOverride)
         if appID == 428370 { environment["OPENSSL_ia32cap"] = "0" }
         return environment
     }
@@ -693,6 +721,10 @@ final class LauncherModel {
         let capture = LaunchDiagnostics.enabled && (captureRequested ||
             ProcessInfo.processInfo.arguments.contains("--capture-metal-diagnostics"))
         wvr_metal_shader_compatibility_install(capture ? 1 : 0)
+        if let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+            let output = documents.appendingPathComponent("WindowsVR/PresentDiagnostics", isDirectory: true)
+            output.path.withCString { wvr_present_diagnostics_install_v1($0) }
+        }
     }
 
     private static func configureAudioEnvironment() throws {
@@ -740,6 +772,25 @@ final class LauncherModel {
             launchError = nil
             defer { isLaunching = false }
             guard runtime.isAvailable else { throw LauncherFailure.runtimePluginMissing }
+            if WindowsVRAngleTrial.enabled, let selection = launchSelection, selection.game.id == 2868840 {
+                try MadeiraDock.validate(selection.game, drive: MadeiraDock.drive)
+                guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+                    throw WindowsVRAngleTrial.Failure.unsafePath
+                }
+                let source = try WindowsVRAngleTrial.sourceDirectory(documents: documents,
+                    runID: ProcessInfo.processInfo.environment["WINEVISION_PROBE_RUN_ID"])
+                if ProcessInfo.processInfo.environment["WVR_PERSIST_STS2_ANGLE_PROFILE"] == "1" {
+                    try WindowsVRAngleTrial.installProfile(source: source, documents: documents)
+                    angleCompatibilityAvailable = true
+                    launchLog.notice("Saved experimental compatibility profile for Steam 2868840")
+                }
+                try WindowsVRAngleTrial.prepare(
+                    source: source,
+                    drive: MadeiraDock.drive,
+                    gameRelativePath: selection.game.library + "/common/" + selection.game.installDir,
+                    ledger: WindowsVRAngleTrial.ledger(in: documents))
+                launchLog.notice("Experimental ANGLE/D3D11 trial prepared for Steam 2868840; gameplay unverified")
+            }
             if launchManifest.guestArchitecture == .x86,
                !Self.bundledX86RuntimeAvailable(resources: Bundle.main.resourceURL,
                                                immersiveVR: launchManifest.presentation == .immersiveVR) {
@@ -752,6 +803,7 @@ final class LauncherModel {
             if launchManifest.presentation == .immersiveVR && wvr_compositor_set_render_scale_v1(renderScaleDraft) != 0 {
                 throw WindowsVRLibraryError.invalidProfileArguments
             }
+            WindowsVRLaunchRendering.configure(preset: renderingPresetDraft)
             try await preparePresentation()
             launchLog.notice("Launch: presentation ready (mode=\(launchManifest.presentation.rawValue), immersiveOpen=\(self.immersiveSpaceIsOpen), desktopReady=\(self.desktopSurfaceReady))")
             guard launchManifest.presentation == .desktop ? desktopSurfaceReady : (immersiveSpaceIsOpen && !immersiveSpaceClosedDuringLaunch) else {
@@ -857,6 +909,48 @@ final class LauncherModel {
         desktopSurfaceReady = false
     }
 
+    /// Explicit diagnostic launch only; probes are copied into this app's
+    /// Documents container by the developer and never installed into a game.
+    func selectCompatibilityProbe(_ name: String) throws {
+        guard LaunchDiagnostics.automatedLaunchEnabled, canChangeSelection,
+              let executable = ["mapping": "mapping-probe.exe", "managed": "ManagedRuntimeProbe.exe",
+                                "angle": "angle-probe.exe"][name],
+              let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            throw WindowsGameManifestError.invalidLaunchConfiguration
+        }
+        let run = ProcessInfo.processInfo.environment["WINEVISION_PROBE_RUN_ID"]
+        if let run, UUID(uuidString: run) == nil { throw WindowsGameManifestError.invalidLaunchConfiguration }
+        let relative = run.map { "WindowsVR/ProbeRuns/" + $0 + "/" + name } ?? "WindowsVR/CompatibilityProbes/" + name
+        let directory = documents.appendingPathComponent(relative, isDirectory: true)
+        guard isAppOwnedURL(directory),
+              directory.standardizedFileURL == directory.resolvingSymlinksInPath().standardizedFileURL,
+              try directory.appendingPathComponent(executable).resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]).isRegularFile == true,
+              try directory.appendingPathComponent(executable).resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true else {
+            throw ImportFailure.folderAccessDenied
+        }
+        var probeEnvironment = ["FEX_ENABLECODECACHINGWIP": "0"]
+        if let run {
+            probeEnvironment["WINEVISION_PROBE_RUN_ID"] = run
+        }
+        let probe = try WindowsGameManifest(id: "winevision.probe." + name, title: "Compatibility probe: " + name,
+            executableRelativePath: executable, backend: .windowsWineFEX, graphics: .direct3D11,
+            launchArguments: [], environment: probeEnvironment,
+            presentation: .desktop, guestArchitecture: .x64, schemaVersion: 1)
+        releaseGameDirectoryAccess()
+        manifest = probe
+        steamSelection = nil
+        presentationModeDraft = .desktop
+        manifestName = probe.title
+        gameDirectory = directory
+        gameFolderName = directory.lastPathComponent
+        selectedLibraryEntryID = nil
+        selectedProfileID = nil
+        renderScaleDraft = 1
+        renderingPresetDraft = .automatic
+        launchArgumentsText = "[]"
+        launchError = nil
+    }
+
     func selectDesktopDemo() throws {
         guard canChangeSelection else { return }
         guard let resource = Bundle.main.url(forResource: "DesktopDemo", withExtension: nil),
@@ -885,6 +979,7 @@ final class LauncherModel {
         selectedLibraryEntryID = nil
         selectedProfileID = nil
         renderScaleDraft = 1
+        renderingPresetDraft = .automatic
         launchArgumentsText = "[]"
         launchError = nil
     }
@@ -927,6 +1022,7 @@ final class LauncherModel {
         selectedLibraryEntryID = nil
         selectedProfileID = nil
         renderScaleDraft = 1
+        renderingPresetDraft = .automatic
         launchArgumentsText = "[]"
         launchError = nil
     }
@@ -1114,7 +1210,12 @@ final class LauncherModel {
             graphics: requested.graphics.rawValue, renderScale: Double(renderScaleDraft),
             appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown",
             buildNumber: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown",
-            runtimeBuildID: runtimeBuildID, profileID: selectedProfileID, profileName: profile?.name ?? profileNameDraft)
+            runtimeBuildID: runtimeBuildID, profileID: selectedProfileID, profileName: profile?.name ?? profileNameDraft,
+            hardware: hardwareCapabilities,
+            renderingPreset: renderingPresetDraft.rawValue,
+            eyeWidth: WindowsVRLaunchRendering.resolve(preset: renderingPresetDraft).width,
+            eyeHeight: WindowsVRLaunchRendering.resolve(preset: renderingPresetDraft).height,
+            synthesisMode: UserDefaults.standard.integer(forKey: "WVRFrameSynthesisMode"))
         let prefix: URL?
         if requested.id == "steam.shared" {
             prefix = MadeiraDock.prefix
@@ -1177,17 +1278,21 @@ final class LauncherModel {
         let selectedProfile = selectedEntry?.profiles.first(where: { $0.id == selectedProfileID })
         let base = try selectedProfile?.applying(to: selectedEntry?.manifest ?? manifest) ?? manifest
         var environment = base.environment
+        if base.id == "steam.shared", let appID = selectedSteamAppID {
+            environment = WindowsVRAngleTrial.environment(appID: appID,
+                enabled: WindowsVRAngleTrial.enabled, base: environment)
+        }
         // The Advanced setting is stored in AppStorage; 1.0 (or unset) adds nothing to the launch environment.
         let internalScale = UserDefaults.standard.double(forKey: "WVRInternalRenderScale")
-        if internalScale >= 0.5 && internalScale < 1 {
+        if environment["WVR_INTERNAL_RENDER_SCALE"] == nil, internalScale >= 0.5 && internalScale < 1 {
             environment["WVR_INTERNAL_RENDER_SCALE"] = String(format: "%.2f", internalScale)
         }
         // Temporal upscaling needs the game's projection jitter; selecting it turns jitter on.
-        if UserDefaults.standard.integer(forKey: "WVRFrameSynthesisMode") == 3 {
+        if environment["WVR_PROJECTION_JITTER"] == nil, UserDefaults.standard.integer(forKey: "WVRFrameSynthesisMode") == 3 {
             environment["WVR_PROJECTION_JITTER"] = "1"
         }
         // Opt-in lossy render target compression; the Advanced toggle is off by default.
-        if UserDefaults.standard.bool(forKey: "WVRLossyRenderTargets") {
+        if environment["DXMT_LOSSY_RENDER_TARGETS"] == nil, UserDefaults.standard.bool(forKey: "WVRLossyRenderTargets") {
             environment["DXMT_LOSSY_RENDER_TARGETS"] = "1"
         }
         var guestArchitecture = base.guestArchitecture
@@ -1480,6 +1585,7 @@ final class LauncherModel {
     }
 
     private func showImportError(_ error: Error) {
+        launchLog.error("Selection preparation failed: \(error.localizedDescription.prefix(1024))")
         importError = error.localizedDescription
         isShowingImportError = true
     }
