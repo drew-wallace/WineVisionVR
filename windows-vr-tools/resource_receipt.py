@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import subprocess
 from pathlib import Path
 import tempfile
 from prepare_runtime import project_patch_hashes
@@ -248,6 +249,30 @@ def guest_resource_files(source, enable_x86=False):
     return dict(sorted(files.items()))
 
 
+def desktop_input_build(runtime_root, source):
+    resource = source / "arm64ec-windows/windows.gaming.input.dll"
+    if not resource.exists():
+        return None
+    patch = ROOT / "windows-vr-tools/patches/windows-gaming-input/0001-host-gamepad.patch"
+    header = ROOT / "windows-vr-native/include/WindowsVRWGIGamepad.h"
+    copied_header = runtime_root / "wine/dlls/windows.gaming.input/wvr_wgi_gamepad.h"
+    artifact = runtime_root / "wine/build-arm64ec/dlls/windows.gaming.input/arm64ec-windows/windows.gaming.input.dll"
+    for path in (resource, patch, header, copied_header, artifact):
+        ensure_regular_nonempty(path, "Windows Gaming Input build input/output")
+    if sha256_file(header) != sha256_file(copied_header):
+        fail("Windows Gaming Input conversion header differs from the project source.")
+    check = subprocess.run(["git", "-C", str(runtime_root), "apply", "--reverse", "--check", str(patch)],
+                           capture_output=True, timeout=15)
+    if check.returncode or b"WVR-WGI-HOST-v1" not in resource.read_bytes():
+        fail("Windows Gaming Input DLL/source lacks the host-gamepad integration patch.")
+    files = ["wine/dlls/windows.gaming.input/" + name for name in
+             ("Makefile.in", "main.c", "provider.c", "gamepad.c", "wvr_wgi_gamepad.h")]
+    return {"guestResource": "arm64ec-windows/windows.gaming.input.dll", "sha256": sha256_file(resource),
+            "integrationPatchSha256": sha256_file(patch), "conversionHeaderSha256": sha256_file(header),
+            "sourceFilesSha256": {name: sha256_file(runtime_root / name) for name in files},
+            "buildArtifact": str(artifact.relative_to(runtime_root)), "buildArtifactSha256": sha256_file(artifact)}
+
+
 def write_guest(args):
     from stage_resources import is_arm64ec_pe
     runtime_root = args.runtime_source.resolve()
@@ -294,6 +319,9 @@ def write_guest(args):
         from stage_resources import validate_wine_resources
         validate_wine_resources(source, True)
         receipt["guest"]["x86"] = {"enabled": True, "fexWow64Translator": fex_wow64_build(runtime_root, source)}
+    desktop_input = desktop_input_build(runtime_root, source)
+    if desktop_input is not None:
+        receipt["guest"]["desktopInput"] = desktop_input
     output = args.output.absolute() if args.output else source / GUEST_RECEIPT_NAME
     write_json_atomic(output, receipt)
     print(f"Recorded Windows guest resource provenance at {output}")
@@ -331,6 +359,9 @@ def validate_receipts(source, runtime_root, native_receipt_path, enable_x86=Fals
     actual_files = guest_resource_files(source, enable_x86)
     if not isinstance(expected_files, dict) or expected_files != actual_files:
         fail("Windows guest resource files do not match their recorded build receipt.")
+    desktop_input = desktop_input_build(runtime_root, source)
+    if guest.get("guest", {}).get("desktopInput") != desktop_input:
+        fail("Windows Gaming Input guest receipt does not match its source patch, conversion header and build output.")
     if enable_x86:
         expected_x86 = {"enabled": True, "fexWow64Translator": fex_wow64_build(runtime_root, source)}
         if guest.get("guest", {}).get("x86") != expected_x86:

@@ -804,6 +804,16 @@ final class LauncherModel {
                 throw WindowsVRLibraryError.invalidProfileArguments
             }
             WindowsVRLaunchRendering.configure(preset: renderingPresetDraft)
+            let controllerEnvironment = WindowsVRTranslationEnvironment.desktopControllerEnvironment(
+                isDesktop: launchManifest.presentation == .desktop, steamAppID: steamSelection?.game.id,
+                inherited: WindowsVRTranslationEnvironment.inheritedControllerEnvironment)
+            for (key, value) in controllerEnvironment { setenv(key, value, 1) }
+            if !controllerEnvironment.isEmpty {
+                launchLog.notice("Desktop controller compatibility: Windows HID and XInput for Risk of Rain 2")
+            }
+            defer {
+                if !hasAcceptedLaunch { for key in controllerEnvironment.keys { unsetenv(key) } }
+            }
             try await preparePresentation()
             launchLog.notice("Launch: presentation ready (mode=\(launchManifest.presentation.rawValue), immersiveOpen=\(self.immersiveSpaceIsOpen), desktopReady=\(self.desktopSurfaceReady))")
             guard launchManifest.presentation == .desktop ? desktopSurfaceReady : (immersiveSpaceIsOpen && !immersiveSpaceClosedDuringLaunch) else {

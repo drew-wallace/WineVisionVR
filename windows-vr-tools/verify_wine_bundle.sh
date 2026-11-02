@@ -52,6 +52,12 @@ for FILE in crypt32.dll cryptbase.dll rsaenh.dll psapi.dll imm32.dll; do
     exit 1
   fi
 done
+for FILE in xinput1_1.dll xinput1_2.dll xinput1_3.dll xinput1_4.dll xinput9_1_0.dll windows.gaming.input.dll; do
+  if [[ ! -s "$APP/Runtime/arm64ec-windows/$FILE" ]]; then
+    echo "error: Missing Wine desktop gamepad dependency: $FILE" >&2
+    exit 1
+  fi
+done
 echo "Wine bootstrap bundle verified (selected architectures, matching NLS and required UI fonts)."
 if [[ -f "$APP/Runtime/AVPPLAY_GUEST_BUILD_RECEIPT.json" ]]; then
   python3 "$(dirname "$0")/verify_wine_imports.py" "$APP/Runtime/arm64ec-windows"

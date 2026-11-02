@@ -30,5 +30,19 @@ import Foundation
   assert(WindowsVRTranslationEnvironment.compatibilityEnvironment(steamAppID: 123,
       inheritedCacheOverride: nil, inheritedJITPoolOverride: "896")[poolKey] == nil)
   print("PASS: translation defaults apply before Wine, preserve explicit overrides and enable the implemented persistent cache")
+  let hid = ["MADEIRA_HIDPAD": "generic", "MADEIRA_HIDPAD_NAME": "WineVision Gamepad"]
+  assert(WindowsVRTranslationEnvironment.desktopControllerEnvironment(isDesktop: true,
+      steamAppID: 632360, inherited: [:]) == hid)
+  for appID in [2868840, 123] {
+    assert(WindowsVRTranslationEnvironment.desktopControllerEnvironment(isDesktop: true,
+        steamAppID: appID, inherited: [:]).isEmpty)
+  }
+  assert(WindowsVRTranslationEnvironment.desktopControllerEnvironment(isDesktop: false,
+      steamAppID: 632360, inherited: [:]).isEmpty)
+  assert(WindowsVRTranslationEnvironment.desktopControllerEnvironment(isDesktop: true,
+      steamAppID: 632360, inherited: ["MADEIRA_HIDPAD": "dualsense"]).isEmpty)
+  assert(WindowsVRTranslationEnvironment.desktopControllerEnvironment(isDesktop: true,
+      steamAppID: 632360, inherited: ["MADEIRA_HIDPAD_NAME": "Custom"])
+      == ["MADEIRA_HIDPAD": "generic"])
  }
 }

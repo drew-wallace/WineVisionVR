@@ -5,7 +5,7 @@ options:
     visionOS: "27.0"
 settings:
   base:
-    CURRENT_PROJECT_VERSION: "18"
+    CURRENT_PROJECT_VERSION: "62"
     MARKETING_VERSION: "0.1.0"
 packages:
   WindowsVRCore:
@@ -60,8 +60,10 @@ targets:
         WVRDiagnostics: false
         WVRRuntimePluginFramework: WindowsVRLaunchAdapter.framework
         LSSupportsOpeningDocumentsInPlace: true
+        NSBluetoothAlwaysUsageDescription: Connects to your Steam Controller so its buttons, sticks and triggers can control Windows games.
         GCSupportsControllerUserInteraction: true
         GCSupportedGameControllers:
+          - ProfileName: ExtendedGamepad
           - ProfileName: SpatialGamepad
     sources:
       - path: Sources

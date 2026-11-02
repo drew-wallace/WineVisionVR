@@ -3,12 +3,15 @@ import UIKit
 import Metal
 import Observation
 import WindowsVRCore
+import GameController
 
 @MainActor
 @Observable
 final class WindowsDesktopControls {
     weak var surface: WindowsDesktopSurface?
     var inputMessage: String?
+    var gamepadStatus = L("No gamepad connected", "Kein Gamepad verbunden")
+    func setActive(_ active: Bool) { surface?.setSceneActive(active) }
     func keyboard() { surface?.toggleKeyboard() }
     func key(_ vk: Int32) { surface?.pulseKey(vk) }
     func rightClick() { surface?.rightClick() }
@@ -30,6 +33,7 @@ struct WindowsDesktopView: View {
                 Button(L("Keyboard", "Tastatur"), systemImage: "keyboard") { controls.keyboard() }
                     .disabled(!model.hasAcceptedLaunch)
                 Menu(L("Controls", "Steuerung"), systemImage: "cursorarrow") {
+                    Label(controls.gamepadStatus, systemImage: "gamecontroller")
                     Button("Escape") { controls.key(0x1B) }
                     Button("Tab") { controls.key(0x09) }
                     Button("Enter") { controls.key(0x0D) }
@@ -50,6 +54,7 @@ struct WindowsDesktopView: View {
                 ForceQuitSessionButton()
             }
             WindowsDesktopSurfaceView(model: model, controls: controls)
+                .handlesGameControllerEvents(matching: .gamepad)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(.black)
                 .accessibilityLabel(L("Windows app screen", "Windows-App-Anzeige"))
@@ -66,15 +71,21 @@ struct WindowsDesktopView: View {
         .padding(16)
         .frame(minWidth: 640, minHeight: 480)
         .onChange(of: scenePhase) { _, phase in
+            controls.setActive(phase == .active)
             if phase != .active { controls.releaseInput() }
         }
-        .onDisappear { controls.releaseInput() }
+        .onAppear { controls.setActive(scenePhase == .active) }
+        .onDisappear {
+            controls.setActive(false)
+            controls.releaseInput()
+        }
     }
 }
 
 private struct WindowsDesktopSurfaceView: UIViewRepresentable {
     let model: LauncherModel
     let controls: WindowsDesktopControls
+    @Environment(\.scenePhase) private var scenePhase
 
     func makeUIView(context: Context) -> WindowsDesktopSurface {
         let view = WindowsDesktopSurface(controls: controls)
@@ -85,11 +96,16 @@ private struct WindowsDesktopSurfaceView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: WindowsDesktopSurface, context: Context) {
+        // UIKit can attach this view while the StikDebug handoff still leaves
+        // its window temporarily inactive. Apply SwiftUI's current phase on
+        // every update, including the update accepting the runtime launch.
+        view.setSceneActive(scenePhase == .active)
         // A normal Windows app can ask to save after Alt-F4; keep that dialog usable.
         view.inputEnabled = model.hasAcceptedLaunch && !model.isStopping
     }
 
     static func dismantleUIView(_ view: WindowsDesktopSurface, coordinator: ()) {
+        view.stopGamepad()
         view.releaseInput()
         view.didDetach?()
         _ = winios_compositor_set_hidden(1)
@@ -100,6 +116,11 @@ private struct WindowsDesktopSurfaceView: UIViewRepresentable {
 @MainActor
 final class WindowsDesktopSurface: UIView, UIKeyInput {
     private let metalLayer = CAMetalLayer()
+    private let gamepad = WindowsDesktopGamepad()
+    private let steamController = SteamControllerBluetooth()
+    private let gamepadInteraction = GCEventInteraction()
+    private var sceneActive = false
+    private var lastGamepadRouting: String?
     private weak var controls: WindowsDesktopControls?
     private var keysHeld: Set<Int32> = []
     private var activeTouch: UITouch?
@@ -109,7 +130,10 @@ final class WindowsDesktopSurface: UIView, UIKeyInput {
     var didAttach: (() -> Void)?
     var didDetach: (() -> Void)?
     var inputEnabled = false {
-        didSet { if !inputEnabled { releaseInput() } }
+        didSet {
+            updateGamepadInput()
+            if !inputEnabled { releaseInput() }
+        }
     }
 
     init(controls: WindowsDesktopControls) {
@@ -117,6 +141,18 @@ final class WindowsDesktopSurface: UIView, UIKeyInput {
         super.init(frame: .zero)
         backgroundColor = .black
         isUserInteractionEnabled = true
+        addInteraction(gamepadInteraction)
+        gamepad.diagnostic = { LaunchLogFile.append("notice", "Gamepad: \($0)") }
+        steamController.diagnostic = { LaunchLogFile.append("notice", "Gamepad: \($0)") }
+        steamController.stateChanged = { [weak gamepad] in gamepad?.setSteamControllerState($0) }
+        gamepad.controllersChanged = { [weak controls] names in
+            if !WindowsDesktopGamepad.isAvailable {
+                controls?.gamepadStatus = L("Gamepad bridge unavailable in this runtime", "Gamepad-Brücke in dieser Laufzeit nicht verfügbar")
+            } else {
+                controls?.gamepadStatus = names.isEmpty ? L("No gamepad connected", "Kein Gamepad verbunden") : names.joined(separator: ", ")
+            }
+            LaunchLogFile.append("notice", "Desktop XInput controllers: \(names.joined(separator: ", ")); bridge=\(WindowsDesktopGamepad.isAvailable)")
+        }
         layer.addSublayer(metalLayer)
         metalLayer.pixelFormat = .bgra8Unorm
         metalLayer.drawableSize = CGSize(width: 1024, height: 768)
@@ -129,11 +165,40 @@ final class WindowsDesktopSurface: UIView, UIKeyInput {
     override func didMoveToWindow() {
         super.didMoveToWindow()
         if window == nil {
+            stopGamepad()
             releaseInput()
             attached = false
             didDetach?()
+        } else {
+            // Preserve the phase supplied by SwiftUI during window activation.
+            gamepad.start()
+            steamController.start()
+            updateGamepadInput()
         }
         setNeedsLayout()
+    }
+
+    func setSceneActive(_ active: Bool) {
+        sceneActive = active
+        updateGamepadInput()
+    }
+
+    private func updateGamepadInput() {
+        let enabled = window != nil && sceneActive && inputEnabled && WindowsDesktopGamepad.isAvailable
+        let routing = "enabled=\(enabled) window=\(window != nil) sceneActive=\(sceneActive) accepted=\(inputEnabled) bridge=\(WindowsDesktopGamepad.isAvailable)"
+        if routing != lastGamepadRouting {
+            lastGamepadRouting = routing
+            LaunchLogFile.append("notice", "Gamepad routing: \(routing)")
+        }
+        gamepadInteraction.handledEventTypes = window != nil && sceneActive ? .gamepad : []
+        gamepad.setEnabled(enabled)
+        steamController.setActive(enabled)
+    }
+
+    func stopGamepad() {
+        gamepadInteraction.handledEventTypes = []
+        steamController.stop()
+        gamepad.stop()
     }
 
     override func layoutSubviews() {

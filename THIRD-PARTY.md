@@ -31,6 +31,7 @@ the licence texts travel with the source caches and, in a built app, in `Runtime
 | [OpenSuperSampling (OSS)](https://github.com/cashcon57/open-supersampling) | cashcon57 and contributors | Apache-2.0 | 2D Gaussian canvas reconstruction and temporal extrapolation architecture adapted for visionOS foveated neural upscaling and 90Hz frame extrapolation (Mode 4) |
 | [VeRantyx](https://github.com/Ag3497120/VeRantyx) | Ag3497120 | MIT | Custom DirectX/Vulkan runtime bridge architectures on Apple Silicon, in-process synchronization models, and zero-copy IOSurface texture transport |
 | Valve's Steam client | Valve Corporation | Proprietary, not included | Downloaded on the headset from Valve's own CDN with sizes and hashes verified; this project distributes no Valve binary |
+| [SDL Steam Controller protocol definitions](https://github.com/libsdl-org/SDL/tree/bd9f6ca9ff0e9509f49980fc1b70837f54b6f244/src/joystick/hidapi) and [Valve's SDL iOS BLE backend](https://github.com/libsdl-org/SDL/blob/bd9f6ca9ff0e9509f49980fc1b70837f54b6f244/src/hidapi/ios/hid.m) | Valve Corporation, Sam Lantinga and SDL contributors | zlib | Protocol reference for the independently implemented Swift 2026 Steam Controller BLE transport and decoder; no SDL source or binary is embedded |
 
 Games used for testing, Moss: Book II (Polyarc) and BONEWORKS (Stress Level Zero), belong to their publishers.
 No game content is distributed, and no purchase check is bypassed.

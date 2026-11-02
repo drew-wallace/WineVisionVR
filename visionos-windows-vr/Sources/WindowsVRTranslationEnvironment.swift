@@ -7,6 +7,10 @@ enum WindowsVRTranslationEnvironment {
     static let inheritedCodeCacheOverride = ProcessInfo.processInfo.environment["FEX_ENABLECODECACHINGWIP"]
     static let inheritedJITPoolOverride = ProcessInfo.processInfo.environment["WVR_JIT_POOL_MIB"]
 
+    static let inheritedControllerEnvironment = ProcessInfo.processInfo.environment.filter {
+        $0.key == "MADEIRA_HIDPAD" || $0.key == "MADEIRA_HIDPAD_NAME"
+    }
+
     static let defaults: [String: String] = [
         "FEX_MULTIBLOCK": "1",
         // Upstream default block size limit.
@@ -30,6 +34,16 @@ enum WindowsVRTranslationEnvironment {
         for (name, value) in defaults where getenv(name) == nil {
             setenv(name, value, 0)
         }
+    }
+
+    /// Rewired in Risk of Rain 2 requests Windows.Gaming.Input. Its HID
+    /// enumeration requires a Windows device in addition to XInput snapshots.
+    static func desktopControllerEnvironment(isDesktop: Bool, steamAppID: Int?,
+                                             inherited: [String: String]) -> [String: String] {
+        guard isDesktop, steamAppID == 632360, inherited["MADEIRA_HIDPAD"] == nil else { return [:] }
+        var result = ["MADEIRA_HIDPAD": "generic"]
+        if inherited["MADEIRA_HIDPAD_NAME"] == nil { result["MADEIRA_HIDPAD_NAME"] = "WineVision Gamepad" }
+        return result
     }
 
     static func compatibilityEnvironment(steamAppID: Int, base: [String: String] = [:],

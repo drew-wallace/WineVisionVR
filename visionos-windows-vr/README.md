@@ -31,6 +31,44 @@ The controller provider adapts GameController spatial accessories through ARKit 
 
 ## Current limits and setup
 
+Desktop sessions accept paired Bluetooth or USB gamepads through Apple's extended
+gamepad profile and expose them as Xbox/XInput controllers (up to four players).
+Pair the controller in visionOS Settings, then launch a desktop game and look at
+its window to route input there. Buttons, D-pad, both sticks, stick clicks,
+shoulders, independent analog triggers and Menu/Options are forwarded; the
+system Home button remains reserved. The Controls menu lists connected pads.
+Controllers already connected at launch and pads connected during play are
+detected automatically. Backgrounding releases held inputs; closing the desktop
+disconnects the guest slots. VR spatial controllers use their existing path.
+Rumble and keyboard/mouse emulation for games without XInput support are not
+implemented by this adapter. The guest package must include the five patched
+ARM64EC XInput DLLs; source builds and bundle validation now require them.
+
+Run the virtual-controller/Wine-transport regression on macOS with
+`python3 -m unittest discover -s visionos-windows-vr/Tests/Contracts -p test_desktop_gamepad.py`.
+
+The **2026 Steam Controller** uses a separate CoreBluetooth adapter because its
+Valve BLE service is not exposed as a standard Apple gamepad on the tested
+headset. Pair it in visionOS Settings and allow the app’s Bluetooth access.
+Desktop sessions automatically retrieve Steam peripherals connected by the OS;
+there is no in-app connection step. The adapter checks their Valve service and
+Triton input characteristics, and translates the
+0x45/0x47 reports into a free XInput player slot. It releases held input on
+disconnect, backgrounding and stalled notifications, and temporarily suppresses
+the controller's built-in mouse/keyboard mode during active gameplay. Buttons,
+sticks and analog triggers are mapped; trackpads, gyro, back paddles and rumble
+are not mapped by this initial adapter. Its protocol reference is Valve's SDL
+iOS backend and SDL's Triton report definitions at commit
+`bd9f6ca9ff0e9509f49980fc1b70837f54b6f244`; no SDL binary is included.
+
+Risk of Rain 2 also requests Windows Gaming Input through Rewired. Desktop
+sessions for that title enable the runtime's generic Windows
+HID device and publish player 1 to it alongside XInput. The package includes
+the matching ARM64EC `windows.gaming.input.dll`. This compatibility choice is
+scoped to that title and respects explicit host HID settings. The standalone
+Windows probe at `windows-vr-native/Tests/Compatibility/GamepadProbe.c` checks
+all five XInput variants, DirectInput enumeration and WinRT Gamepad readings.
+
 - Source adapters, source overlays and build recipes are included. Native archives must be built for visionOS; guest DLLs and Madeira Dock require the pinned Windows cross-toolchain. Generated binaries are not checked in. D3D11 is the initial Steam launch profile; D3D12 has a separately gated experimental package. Vulkan is unavailable.
 - JIT preparation requests the app's Madeira debugger script through the configured StikDebug/StikJIT URL scheme. That helper must be installed and paired; debugger attachment alone does not mean FEX JIT memory is prepared or that execution will succeed.
 - The sample manifest is metadata only. Supply a game you are legally entitled to use and select its containing folder in the app.

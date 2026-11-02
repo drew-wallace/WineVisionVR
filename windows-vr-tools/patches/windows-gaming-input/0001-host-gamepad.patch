@@ -1,0 +1,101 @@
+--- a/wine/dlls/windows.gaming.input/Makefile.in
++++ b/wine/dlls/windows.gaming.input/Makefile.in
+@@ -1,5 +1,5 @@
+ MODULE = windows.gaming.input.dll
+-IMPORTS = combase uuid user32 dinput8 setupapi hid
++IMPORTS = combase uuid user32 dinput8 setupapi hid win32u
+ 
+ SOURCES = \
+ 	async.c \
+--- a/wine/dlls/windows.gaming.input/main.c
++++ b/wine/dlls/windows.gaming.input/main.c
+@@ -86,6 +86,7 @@
+     }
+ 
+     HidD_GetHidGuid( &guid );
++    i = 0; /* HID interfaces have their own enumeration index. */
+ 
+     while (SetupDiEnumDeviceInterfaces( set, NULL, &guid, i++, &iface ))
+     {
+--- a/wine/dlls/windows.gaming.input/provider.c
++++ b/wine/dlls/windows.gaming.input/provider.c
+@@ -170,6 +170,7 @@
+ {
+     struct provider *impl = impl_from_IWineGameControllerProvider( iface );
+     DIDEVICEINSTANCEW instance = {.dwSize = sizeof(DIDEVICEINSTANCEW)};
++    DIPROPDWORD identity = {.diph = {.dwHeaderSize = sizeof(DIPROPHEADER), .dwSize = sizeof(DIPROPDWORD)}};
+     const WCHAR *tmp;
+     HRESULT hr;
+ 
+@@ -177,7 +178,14 @@
+ 
+     if (FAILED(hr = IDirectInputDevice8_GetDeviceInfo( impl->dinput_device, &instance ))) return hr;
+ 
+-    if ((tmp = wcschr( impl->device_path + 8, '#' )) && !wcsnicmp( tmp - 6, L"&XI_", 4 ))
++    /* Madeira's virtual HID pad is backed by the same XInput snapshot. */
++    if (SUCCEEDED(IDirectInputDevice8_GetProperty( impl->dinput_device, DIPROP_VIDPID, &identity.diph )) &&
++        identity.dwData == MAKELONG(0x1209, 0x4d47))
++    {
++        *value = WineGameControllerType_Gamepad;
++        ERR("WVR-WGI-HOST-v1 virtual gamepad recognized\n");
++    }
++    else if ((tmp = wcschr( impl->device_path + 8, '#' )) && !wcsnicmp( tmp - 6, L"&XI_", 4 ))
+         *value = WineGameControllerType_Gamepad;
+     else switch (GET_DIDEVICE_TYPE( instance.dwDevType ))
+     {
+--- a/wine/dlls/windows.gaming.input/gamepad.c
++++ b/wine/dlls/windows.gaming.input/gamepad.c
+@@ -19,6 +19,9 @@
+ 
+ #include "private.h"
+ #include "provider.h"
++#include "xinput.h"
++#include "ntuser.h"
++#include "wvr_wgi_gamepad.h"
+ 
+ #include "wine/debug.h"
+ 
+@@ -70,6 +73,7 @@
+ 
+     struct WineGameControllerState initial_state;
+     BOOL state_changed;
++    BOOL host_gamepad;
+ };
+ 
+ static inline struct gamepad *impl_from_IGameControllerImpl( IGameControllerImpl *iface )
+@@ -169,6 +173,11 @@
+ 
+     impl->IGameController_outer = outer;
+     IGameControllerProvider_AddRef( (impl->provider = provider) );
++    {
++        UINT16 vid = 0, pid = 0;
++        impl->host_gamepad = SUCCEEDED(IGameControllerProvider_get_HardwareVendorId(provider, &vid)) &&
++            SUCCEEDED(IGameControllerProvider_get_HardwareProductId(provider, &pid)) && vid == 0x1209 && pid == 0x4d47;
++    }
+ 
+     hr = IGameControllerProvider_QueryInterface( provider, &IID_IWineGameControllerProvider,
+                                                  (void **)&impl->wine_provider );
+@@ -270,6 +279,23 @@
+     HRESULT hr;
+ 
+     TRACE( "iface %p, value %p.\n", iface, value );
++
++    if (impl->host_gamepad)
++    {
++        XINPUT_STATE host = {0};
++        struct wvr_wgi_gamepad_reading reading;
++        if (!value) return E_POINTER;
++        memset(value, 0, sizeof(*value));
++        NtUserGetGamepadState(0, NtUserGamepadOp_State, &host);
++        reading = wvr_gamepad_to_wgi(host.Gamepad.wButtons, host.Gamepad.bLeftTrigger, host.Gamepad.bRightTrigger,
++                                   host.Gamepad.sThumbLX, host.Gamepad.sThumbLY, host.Gamepad.sThumbRX, host.Gamepad.sThumbRY);
++        value->Buttons = reading.buttons;
++        value->LeftTrigger = reading.left_trigger; value->RightTrigger = reading.right_trigger;
++        value->LeftThumbstickX = reading.lx; value->LeftThumbstickY = reading.ly;
++        value->RightThumbstickX = reading.rx; value->RightThumbstickY = reading.ry;
++        value->Timestamp = GetTickCount64();
++        return S_OK;
++    }
+ 
+     if (FAILED(hr = IWineGameControllerProvider_get_State( impl->wine_provider, &state ))) return hr;
+ 

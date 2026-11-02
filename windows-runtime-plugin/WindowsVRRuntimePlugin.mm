@@ -1081,7 +1081,11 @@ int32_t RunRequest(LaunchRequest request) {
     // additionally requires stereo targets and a tracked head pose.
     SetLaunchEnvironment("WVR_REQUIRE_COMPOSITOR_DEVICE", "1");
     SetLaunchEnvironment("WVR_GRAPHICS_API", request.graphics.c_str());
-    SetLaunchEnvironment("WINEDLLOVERRIDES", "d3d11,d3d12,dxgi,winemetal=b");
+    // A game's bundled Microsoft XInput DLL cannot see the host snapshots.
+    // Desktop sessions use Wine's patched implementation for every version.
+    SetLaunchEnvironment("WINEDLLOVERRIDES", request.presentation == "desktop" ?
+        "d3d11,d3d12,dxgi,winemetal=b;xinput1_1,xinput1_2,xinput1_3,xinput1_4,xinput9_1_0=b" :
+        "d3d11,d3d12,dxgi,winemetal=b");
 
     std::vector<std::string> launchArguments = request.arguments;
     if (cacheSupported && strcmp(getenv("FEX_ENABLECODECACHINGWIP"), "0") != 0) {

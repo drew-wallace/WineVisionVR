@@ -273,7 +273,8 @@ class ArchitectureTests(unittest.TestCase):
         self.image(machine=0xAA64)
         arm64 = self.path.read_bytes()
         services = {"dwrite.dll", "uiautomationcore.dll", "oleacc.dll", "uxtheme.dll",
-                    "msimg32.dll", "schannel.dll", "dsound.dll", "dcomp.dll", "ktmw32.dll", "mscoree.dll"}
+                    "msimg32.dll", "schannel.dll", "dsound.dll", "dcomp.dll", "ktmw32.dll", "mscoree.dll", "wintypes.dll",
+                    "xinput1_1.dll", "xinput1_2.dll", "xinput1_3.dll", "xinput1_4.dll", "xinput9_1_0.dll", "windows.gaming.input.dll"}
         for name in stage.REQUIRED_BUILTINS | services:
             (root / "aarch64-windows" / name).write_bytes(arm64)
         stage.validate_wine_resources(root)

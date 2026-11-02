@@ -50,6 +50,11 @@ ARM64EC_REQUIRED_BUILTINS = {
     # Wine's IL-only image loader imports this shim even when CoreCLR hosts
     # the managed runtime itself (System.Runtime.dll, .NET 9 device probe).
     "mscoree.dll",
+    # Rewired's WindowsGamingInput plugin activates ApiInformation at startup.
+    "wintypes.dll",
+    # Desktop gamepads reach Wine through Madeira's patched XInput entry points.
+    "xinput1_1.dll", "xinput1_2.dll", "xinput1_3.dll", "xinput1_4.dll", "xinput9_1_0.dll",
+    "windows.gaming.input.dll",
 }
 # Prefix initialization and services run through the 64-bit WoW64 host farm.
 # The translated i386 farm supplies their client DLLs, not duplicate service EXEs.

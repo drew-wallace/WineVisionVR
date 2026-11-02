@@ -98,7 +98,23 @@ JOBS="${AVPPLAY_BUILD_JOBS:-4}" bash "$runtime_root/build/wine-pe/build-modules.
     dbghelp evr opengl32 d3d9 dxva2 glu32 ieframe sspicli psapi \
     dwmapi wsock32 avrt vcruntime140 msvcp140 mmdevapi \
     dwrite uiautomationcore oleacc uxtheme msimg32 schannel dsound \
-    dcomp ktmw32 mscoree
+    dcomp ktmw32 mscoree wintypes \
+    xinput1_1 xinput1_2 xinput1_3 xinput1_4 xinput9_1_0
+# The upstream module helper treats a dot in a module name as a file suffix;
+# use the explicit DLL target for the Windows Gaming Input WinRT backend.
+wgi_patch="$repo_root/windows-vr-tools/patches/windows-gaming-input/0001-host-gamepad.patch"
+if git -C "$runtime_root" apply --check "$wgi_patch" 2>/dev/null; then
+    git -C "$runtime_root" apply "$wgi_patch"
+elif ! git -C "$runtime_root" apply --reverse --check "$wgi_patch" 2>/dev/null; then
+    echo "Windows Gaming Input source differs from the recorded host-gamepad patch." >&2
+    exit 1
+fi
+cp "$repo_root/windows-vr-native/include/WindowsVRWGIGamepad.h" "$runtime_root/wine/dlls/windows.gaming.input/wvr_wgi_gamepad.h"
+wgi_target=dlls/windows.gaming.input/arm64ec-windows/windows.gaming.input.dll
+make -C "$wine_build" -j"${AVPPLAY_BUILD_JOBS:-4}" "$wgi_target"
+cp "$wine_build/$wgi_target" "$wine_farm/windows.gaming.input.dll.tmp"
+"$AVPPLAY_LLVM_MINGW_ROOT/bin/arm64ec-w64-mingw32-strip" --strip-debug "$wine_farm/windows.gaming.input.dll.tmp"
+mv "$wine_farm/windows.gaming.input.dll.tmp" "$wine_farm/windows.gaming.input.dll"
 # Create the four core Wine executables as ARM64EC PE files, then strip only
 # debug sections before placing them in the guest farm.
 core_program_targets=(

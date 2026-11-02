@@ -26,3 +26,6 @@ unsigned long long winios_surface_present_count(void);
 #import "../../windows-vr-native/include/WindowsVRReconstruction.h"
 
 #import "../../windows-vr-native/include/WindowsVRFrameSynthesis.h"
+
+// Share Wine's exact host/XInput snapshot layout with the desktop adapter.
+#import "../../third-party/madeira/app/Madeira/Winios/WiniosGamepad.h"
