@@ -12,6 +12,23 @@ import Foundation
 @MainActor
 class SteamLibraryFetcher {
     private let session: SteamCMSession
+    private(set) var ownedApps: Set<UInt32> = []
+    private(set) var ownedDLC: [SteamAppInfo] = []
+    private var appInfoCache: [UInt32: SteamAppInfo] = [:]
+    private var metadataAccount: UInt64 = 0
+    private var appInfoVersions: [UInt32: (sha: Data, info: SteamAppInfo)] = [:]
+    var downloadAppInfo: (@Sendable (URL) async throws -> Data)?
+
+    private func matchMetadataAccount() {
+        if metadataAccount != session.steamID {
+            appInfoCache = [:]
+            appInfoVersions = [:]
+            ownedApps = []
+            ownedDLC = []
+            ownedDepotCache = nil
+            metadataAccount = session.steamID
+        }
+    }
 
     init(session: SteamCMSession) {
         self.session = session
@@ -23,6 +40,8 @@ class SteamLibraryFetcher {
     /// to app IDs and returns the playable apps' metadata.
     func fetchOwnedApps() async throws -> [SteamAppInfo] {
         try await session.ensureConnected()
+        matchMetadataAccount()
+        let account = session.steamID
 
         // Step 1: the license list (owned packages).
         SteamLog.trace("Fetching license list...")
@@ -34,6 +53,8 @@ class SteamLibraryFetcher {
 
         // Step 3: package info, to extract the app IDs.
         let appIDs = try await fetchAppIDsFromPackages(packageIDs: packageIDs, tokens: packageTokens)
+        ownedApps = appIDs
+        ownedDepotCache = nil
         SteamLog.trace("Found \(appIDs.count) unique app IDs")
 
         // Step 4: PICS access tokens for the apps.
@@ -41,10 +62,16 @@ class SteamLibraryFetcher {
 
         // Step 5: app info (name, depots, platform support, ...).
         let appInfos = try await fetchAppInfo(appIDs: Array(appIDs), tokens: appTokens)
+        guard account == session.steamID else { throw CancellationError() }
+        // Reuse the complete metadata just loaded for the library. Installed
+        // DLC checks and pending save retries must not depend on a second PICS
+        // lookup returning another copy of the same record.
+        appInfoCache = Dictionary(appInfos.map { ($0.appID, $0) }, uniquingKeysWith: { _, latest in latest })
         SteamLog.trace("Got info for \(appInfos.count) apps")
 
         // Playable types only: games, demos and applications. This leaves out
         // DLC, soundtracks and tools (redistributables, runtimes, SDKs, servers).
+        ownedDLC = appInfos.filter { $0.type == .dlc }
         let games = appInfos.filter { $0.type.isPlayable }
         SteamLog.trace("\(games.count) of \(appInfos.count) apps are playable (game/demo/application)")
         return games
@@ -82,8 +109,14 @@ class SteamLibraryFetcher {
     /// sits idle-disconnected.
     func fetchAppInfo(appID: UInt32) async throws -> SteamAppInfo? {
         try await session.ensureConnected()
+        matchMetadataAccount()
+        if let cached = appInfoCache[appID] { return cached }
+        let account = session.steamID
         let tokens = try await fetchPICSAccessTokens(appIDs: [appID])
-        return try await fetchAppInfo(appIDs: [appID], tokens: tokens).first
+        let info = try await fetchAppInfo(appIDs: [appID], tokens: tokens).first
+        guard account == session.steamID else { throw CancellationError() }
+        if let info { appInfoCache[appID] = info }
+        return info
     }
 
     // MARK: - Install metadata
@@ -94,11 +127,21 @@ class SteamLibraryFetcher {
     func fetchInstallInfo(appID: UInt32) async throws -> SteamAppInfo? {
         try Task.checkCancellation()
         guard var app = try await fetchAppInfo(appID: appID) else { return nil }
+        app.ownedDLC = ownedApps
+        // DLC may publish depots in its own app metadata. Mount those into
+        // the parent install, while Valve still authorizes every depot key.
+        for dlc in ownedDLC where dlc.parentID == appID {
+            for var depot in dlc.depots where !app.depots.contains(where: { $0.depotID == depot.depotID }) {
+                depot.dlcAppID = dlc.appID
+                depot.fromApp = depot.fromApp ?? dlc.appID
+                app.depots.append(depot)
+            }
+        }
         try Task.checkCancellation()
         var owners: [UInt32: SteamAppInfo] = [appID: app]
         var visited: Set<UInt32> = [appID], references = Set<String>()
         func eligible(_ d: SteamAppInfo.DepotInfo) -> Bool {
-            !d.isSharedInstall && d.dlcAppID == nil && d.supports(os: "windows") &&
+            !d.isSharedInstall && (d.dlcAppID == nil || app.ownedDLC.contains(d.dlcAppID!)) && d.supports(os: "windows") &&
                 !d.lowViolence && (d.language.isEmpty || d.language.lowercased() == "english")
         }
         var pending = app.depots.filter { eligible($0) && $0.publicManifestID == nil && $0.fromApp != nil }
@@ -242,9 +285,46 @@ class SteamLibraryFetcher {
 
             for response in responses {
                 let picsResponse = try CMsgClientPICSProductInfoResponse.deserialize(from: response.body)
+                var pending: [(CMsgClientPICSProductInfoResponse.AppInfo, URL)] = []
                 for app in picsResponse.apps {
                     if let info = SteamAppInfo.parse(appID: app.appid, from: app.buffer) {
                         allApps.append(info)
+                        if app.sha.count == 20 { appInfoVersions[app.appid] = (app.sha, info) }
+                    } else if let cached = appInfoVersions[app.appid], cached.sha == app.sha {
+                        allApps.append(cached.info)
+                    } else if !app.missingToken, let url = SteamPICSMetadata.url(appID: app.appid, sha: app.sha, host: picsResponse.httpHost) {
+                        pending.append((app, url))
+                    } else {
+                        SteamLog.event("[steam-metadata] app=\(app.appid) missing-token=\(app.missingToken ? 1 : 0) bytes=\(app.buffer.count) sha-bytes=\(app.sha.count) declared=\(app.size) host=\(picsResponse.httpHost.prefix(120))")
+                    }
+                }
+                // Bound fan-out for large owned libraries. One missing/retired
+                // app must not drop the remaining catalog on a partial failure.
+                let transport = downloadAppInfo
+                if !pending.isEmpty { SteamLog.trace("Fetching \(pending.count) HTTP product records from \(picsResponse.httpHost)") }
+                for start in stride(from: 0, to: pending.count, by: 8) {
+                    let batch = Array(pending[start..<min(start + 8, pending.count)])
+                    let bodies = await withTaskGroup(of: (UInt32, Data, Data?).self) { group in
+                        for (app, url) in batch {
+                            group.addTask {
+                                do {
+                                    let bytes: Data
+                                    if let transport { bytes = try await transport(url) }
+                                    else { bytes = try await SteamPICSMetadata.fetch(url) }
+                                    return (app.appid, app.sha, try SteamPICSMetadata.decode(bytes, expectedSHA: app.sha))
+                                } catch { return (app.appid, app.sha, nil) }
+                            }
+                        }
+                        var result: [(UInt32, Data, Data?)] = []
+                        for await body in group { result.append(body) }
+                        return result
+                    }
+                    try Task.checkCancellation()
+                    for (id, sha, bytes) in bodies {
+                        if let bytes, let info = SteamAppInfo.parse(appID: id, from: bytes) {
+                            appInfoVersions[id] = (sha, info)
+                            allApps.append(info)
+                        } else { SteamLog.event("[steam-metadata] http-fetch-failed app=\(id)") }
                     }
                 }
             }

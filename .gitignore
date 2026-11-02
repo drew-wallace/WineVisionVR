@@ -44,3 +44,6 @@ visionos-windows-vr/.local.philip.x86.yml
 # Machine-local XcodeGen identity and development-signing overrides.
 /visionos-windows-vr/.local*
 CLAUDE.local.md
+
+# Generated pinned ANGLE renderer and upstream notices (stage_angle_compatibility.py).
+/visionos-windows-vr/Resources/ANGLECompatibility/

@@ -29,6 +29,21 @@ enum WindowsVRAngleTrial {
         assets.allSatisfy { (try? checkedAsset(cachedSource(in: documents).appendingPathComponent($0.name), pin: $0)) != nil }
     }
 
+    static func bundledSource(in bundle: Bundle = .main) -> URL? {
+        bundle.resourceURL?.appendingPathComponent("ANGLECompatibility", isDirectory: true)
+    }
+
+    private static func hasVerifiedAssets(at source: URL?, pins: [Asset]) -> Bool {
+        guard let source, (try? validatePins(pins)) != nil,
+              (try? checkedDirectory(source, create: false)) != nil else { return false }
+        return pins.allSatisfy { (try? checkedAsset(source.appendingPathComponent($0.name), pin: $0)) != nil }
+    }
+
+    static func hasAvailableAssets(in documents: URL, bundled: URL? = bundledSource(),
+                                   pins: [Asset] = assets) -> Bool {
+        hasVerifiedAssets(at: bundled, pins: pins) || hasVerifiedAssets(at: cachedSource(in: documents), pins: pins)
+    }
+
     static func adoptInstalledProfile(available: Bool, defaults: UserDefaults = .standard) {
         guard available, defaults.object(forKey: preferenceKey) == nil else { return }
         defaults.set(true, forKey: preferenceKey)
@@ -70,12 +85,16 @@ enum WindowsVRAngleTrial {
         return result
     }
 
-    static func sourceDirectory(documents: URL, runID: String?) throws -> URL {
+    static func sourceDirectory(documents: URL, runID: String?, bundled: URL? = bundledSource(),
+                                pins: [Asset] = assets) throws -> URL {
         if let runID {
             guard UUID(uuidString: runID) != nil else { throw Failure.unsafePath }
             return documents.appendingPathComponent("WindowsVR/ProbeRuns/\(runID)/angle", isDirectory: true)
         }
-        if hasCachedAssets(in: documents) { return cachedSource(in: documents) }
+        // The signed bundle survives game reinstalls and cache deletion. Each
+        // launch verifies it again before publishing missing files into the game.
+        if let bundled, hasVerifiedAssets(at: bundled, pins: pins) { return bundled }
+        if hasVerifiedAssets(at: cachedSource(in: documents), pins: pins) { return cachedSource(in: documents) }
         return documents.appendingPathComponent("WindowsVR/CompatibilityProbes/angle", isDirectory: true)
     }
 

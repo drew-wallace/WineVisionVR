@@ -59,6 +59,7 @@ for FILE in xinput1_1.dll xinput1_2.dll xinput1_3.dll xinput1_4.dll xinput9_1_0.
   fi
 done
 echo "Wine bootstrap bundle verified (selected architectures, matching NLS and required UI fonts)."
+python3 "$(dirname "$0")/verify_managed_network_dependencies.py" "$APP"
 if [[ -f "$APP/Runtime/AVPPLAY_GUEST_BUILD_RECEIPT.json" ]]; then
   python3 "$(dirname "$0")/verify_wine_imports.py" "$APP/Runtime/arm64ec-windows"
 fi
@@ -104,3 +105,6 @@ fi
 if [[ -d "$APP/WindowsVR/CacheTools" ]]; then
   python3 "$(dirname "$0")/stage_fex_cache.py" --verify --output "$APP/WindowsVR/CacheTools" --runtime "$APP/Runtime"
 fi
+
+# Required app-owned renderer; a clean game download must not depend on an old Documents cache.
+python3 "$(dirname "$0")/stage_angle_compatibility.py" --verify --output "$APP/ANGLECompatibility"

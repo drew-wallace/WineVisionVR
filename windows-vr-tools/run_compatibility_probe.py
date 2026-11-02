@@ -38,9 +38,12 @@ def main():
     parser.add_argument("--build", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True, help="New receipt directory; must not exist")
     parser.add_argument("--gc-region-range", help="Optional process-only hexadecimal .NET diagnostic comparison")
+    parser.add_argument("--managed-https", action="store_true", help="Also test managed HTTPS against Valve's public time endpoint")
     parser.add_argument("--angle-color-bits", type=int, choices=(8, 10), help="Explicit ANGLE window color-format comparison")
     parser.add_argument("--timeout", type=int, default=45, choices=range(5, 61), metavar="5..60")
     args = parser.parse_args()
+    if args.managed_https and args.probe != "managed":
+        parser.error("--managed-https applies only to the managed probe")
     if args.gc_region_range and (args.probe != "managed" or not re.fullmatch(r"[0-9a-fA-F]{1,16}", args.gc_region_range)):
         parser.error("GC region range is an explicit hexadecimal managed-probe comparison only")
     if args.angle_color_bits and args.probe != "angle":
@@ -48,6 +51,8 @@ def main():
     args.output.mkdir(parents=True, exist_ok=False)
     run = str(uuid.uuid4())
     environment = {"WVR_AUTOMATED_LAUNCH": "1", "WINEVISION_PROBE_RUN_ID": run}
+    if args.managed_https:
+        environment["WVR_MANAGED_HTTPS_PROBE"] = "1"
     if args.gc_region_range:
         environment["DOTNET_GCRegionRange"] = args.gc_region_range
     if args.angle_color_bits:

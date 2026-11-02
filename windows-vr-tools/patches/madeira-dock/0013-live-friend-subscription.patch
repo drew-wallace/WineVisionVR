@@ -1,0 +1,117 @@
+--- a/src/presence.c
++++ b/src/presence.c
+@@ -3,6 +3,7 @@
+  * Madeira Converter Exception: see LICENSE-EXCEPTION.md */
+ #include "presence.h"
+ #include "frame.h"
++#include "subscription.h"
+ 
+ /* The desktop UI normally publishes presence. A headless client must wake its
+  * friends session explicitly. Keep deliberate Busy/Invisible/etc. settings;
+@@ -97,6 +98,7 @@
+         !dock_method_is((uintptr_t)module, friends, 7, 0x752d60)) {
+         o->event("session-social-interface-ready", 0); return;
+     }
++    dock_subscription_start(module, engine, user, pipe, layout, o);
+     social.friends = friends;
+     social.state = (int32_t (*)(void *))(*(void ***)friends)[4];
+     social.set_state = (void (*)(void *, int32_t))(*(void ***)friends)[5];
+@@ -151,6 +153,7 @@
+ }
+ void dock_social_tick(uint64_t now, void (*event)(const char *, int32_t))
+ {
++    dock_subscription_tick(now, event);
+     if (reconnect_pending) {
+         reconnect_pending = false;
+         if (social.state(social.friends) == 1) {
+--- a/src/session.c
++++ b/src/session.c
+@@ -11,6 +11,7 @@
+ #include "auth.h"
+ #include "presence.h"
+ #include "frame.h"
++#include "subscription.h"
+ #include <stdlib.h>
+ #include <string.h>
+ #include <stdio.h>
+@@ -397,6 +398,7 @@
+                  ((query_fn)v[4])(client_user) && ((query_fn)v[6])(client_user));
+     }
+ done:
++    dock_subscription_stop(o->event);
+     dock_frame_stop(o->event);
+     dock_auth_clear(&auth, sizeof(auth));
+     o->event("session-auth-test-result", result);
+--- /dev/null
++++ b/src/subscription.c
+@@ -0,0 +1,57 @@
++/* SPDX-License-Identifier: GPL-3.0-or-later
++ * Copyright 2026 WineVision VR contributors
++ * Madeira Converter Exception: see LICENSE-EXCEPTION.md */
++#include "subscription.h"
++#ifdef _WIN64
++#include "presence.h"
++#include <stdlib.h>
++#include <string.h>
++static void *messages;
++static uint64_t handle, expires;
++void dock_subscription_start(HMODULE module, void *engine, int32_t user, int32_t pipe,
++                             const struct dock_client_layout *layout, const struct sh_observer *o)
++{
++    const char *setting = getenv("MADEIRA_STEAM_FRIEND_SUBSCRIPTION");
++    if (setting && !strcmp(setting, "0")) return;
++    if (!layout || strcmp(layout->sha256, "71b391fe9f3e2006cbc81a5c75eef3eb4186012deabfdb2c8b7e8d4850ecf640") ||
++        !dock_method_is((uintptr_t)module, engine, 52, 0x945040)) {
++        o->event("session-friend-subscription-ready", 0); return;
++    }
++    void *object = ((void *(*)(void *, int32_t, int32_t))(*(void ***)engine)[52])(engine, user, pipe);
++    if (!dock_method_is((uintptr_t)module, object, 0, 0x832ff0) ||
++        !dock_method_is((uintptr_t)module, object, 1, 0x762330) ||
++        !dock_method_is((uintptr_t)module, object, 3, 0x827170)) {
++        o->event("session-friend-subscription-ready", 0); return;
++    }
++    dock_subscription_stop(o->event);
++    messages = object;
++    o->event("session-friend-subscription-ready", 1);
++    /* Valve's Chat service defines an empty request and delivers real status
++     * updates as CMsgClientPersonaState. Do not fabricate cached friend data.
++     * This subscribes to status only; it does not read or send chat messages. */
++    const unsigned char empty = 0;
++    handle = ((uint64_t (*)(void *, const char *, const void *, uint32_t, uint64_t))(*(void ***)messages)[0])(
++        messages, "Chat.RequestFriendPersonaStates#1", &empty, 0, 0);
++    expires = o->now_ms() + 30000;
++    o->event("session-friend-subscription-sent", handle != 0);
++}
++void dock_subscription_stop(void (*event)(const char *, int32_t))
++{
++    if (messages && handle) event("session-friend-subscription-released",
++        ((bool (*)(void *, uint64_t))(*(void ***)messages)[3])(messages, handle));
++    messages = NULL; handle = expires = 0;
++}
++void dock_subscription_tick(uint64_t now, void (*event)(const char *, int32_t))
++{
++    if (!messages || !handle) return;
++    uint32_t bytes = 0; int32_t result = 0;
++    if (((bool (*)(void *, uint64_t, uint32_t *, int32_t *))(*(void ***)messages)[1])(messages, handle, &bytes, &result)) {
++        event("session-friend-subscription-result", result);
++        event("session-friend-subscription-bytes", bytes <= 4096 ? (int32_t)bytes : -1);
++        dock_subscription_stop(event);
++    } else if (now >= expires) {
++        event("session-friend-subscription-timeout", 1);
++        dock_subscription_stop(event);
++    }
++}
++#endif
+--- /dev/null
++++ b/src/subscription.h
+@@ -0,0 +1,10 @@
++/* SPDX-License-Identifier: GPL-3.0-or-later */
++#ifndef DOCK_SUBSCRIPTION_H
++#define DOCK_SUBSCRIPTION_H
++#ifdef _WIN64
++#include "session.h"
++void dock_subscription_start(HMODULE, void *, int32_t, int32_t, const struct dock_client_layout *, const struct sh_observer *);
++void dock_subscription_tick(uint64_t, void (*)(const char *, int32_t));
++void dock_subscription_stop(void (*)(const char *, int32_t));
++#endif
++#endif

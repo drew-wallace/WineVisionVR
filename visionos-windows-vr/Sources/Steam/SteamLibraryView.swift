@@ -21,7 +21,8 @@ struct SteamLibraryView: View {
     init(model: SteamLibraryModel = .shared) { self.model = model }
 
     private var visibleGames: [SteamLibraryEntry] {
-        model.games.filter { entry in
+        let entries = filter == .installed ? model.installedGames : model.games
+        return entries.filter { entry in
             let matchesSearch = search.isEmpty || entry.game.name.localizedCaseInsensitiveContains(search)
             let matchesFilter: Bool
             switch filter {
@@ -38,7 +39,13 @@ struct SteamLibraryView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 16) {
-                if !model.signedIn {
+                HStack {
+                    Picker("Library", selection: $filter) {
+                        ForEach(LibraryFilter.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    }.pickerStyle(.segmented)
+                    if model.isLoadingLibrary && filter != .installed { ProgressView().controlSize(.small) }
+                }.padding(.horizontal, 24)
+                if !model.signedIn && filter != .installed {
                     ContentUnavailableView {
                         Label("Your Steam library", systemImage: "gamecontroller.fill")
                     } description: {
@@ -47,12 +54,6 @@ struct SteamLibraryView: View {
                         Button("Sign in to Steam") { showingSignIn = true }.buttonStyle(.borderedProminent)
                     }
                 } else {
-                    HStack {
-                        Picker("Library", selection: $filter) {
-                            ForEach(LibraryFilter.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                        }.pickerStyle(.segmented)
-                        if model.isLoadingLibrary { ProgressView().controlSize(.small) }
-                    }.padding(.horizontal, 24)
                     if filter == .downloads && (!model.activeDownloads.isEmpty || !model.queuedDownloads.isEmpty) {
                         Text("Keep Vision Pro powered and on Wi-Fi. If the system pauses downloads while you are away, they resume when you return.")
                             .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 24)
@@ -81,10 +82,14 @@ struct SteamLibraryView: View {
                             }
                         }.padding(.horizontal, 24).padding(.bottom, 24)
                         if visibleGames.isEmpty {
-                            ContentUnavailableView(model.isLoadingLibrary ? "Loading library…" : "No games to show",
-                                systemImage: "square.grid.2x2", description: Text("Try another filter or refresh your library."))
+                            ContentUnavailableView(filter == .installed ? "No installed games" : (model.isLoadingLibrary ? "Loading library…" : "No games to show"),
+                                systemImage: "square.grid.2x2", description: Text(filter == .installed
+                                    ? "Installed games appear here directly from this headset." : "Try another filter or refresh your library."))
                         }
-                    }.refreshable { await model.refreshLibrary() }
+                    }.refreshable {
+                        if filter == .installed { model.refreshInstalled() }
+                        else { await model.refreshLibrary() }
+                    }
                 }
             }
             .background(LinearGradient(colors: [.blue.opacity(0.12), .clear], startPoint: .topLeading, endPoint: .bottomTrailing))
@@ -115,10 +120,13 @@ struct SteamLibraryView: View {
                         Button(model.isPreparingValveClient ? "Preparing Valve client…" : "Prepare Valve client", systemImage: "arrow.down.circle") {
                             Task { await model.prepareValveClient() }
                         }.disabled(model.isPreparingValveClient || model.runtimeBusy)
+                        if !model.signedIn {
+                            Button("Sign in to Steam", systemImage: "person.crop.circle") { showingSignIn = true }
+                        }
                         if model.signedIn {
                             Button("Sign out", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
                                 Task { await model.signOut() }
-                            }.disabled(model.runtimeBusy)
+                            }.disabled(model.servicesBusy || model.runtimeBusy)
                         }
                     } label: { Image(systemName: "ellipsis") }
                 }
@@ -174,6 +182,10 @@ struct SteamLibraryView: View {
                 Spacer()
                 Button("Dismiss", systemImage: "xmark") { model.error = nil }.labelStyle(.iconOnly)
             }.padding().background(.regularMaterial)
+        } else if let id = model.serviceWarnings.keys.sorted().first, let warning = model.serviceWarnings[id] {
+            let name = model.games.first(where: { $0.id == id })?.game.name ?? "App \(id)"
+            Label("Library loaded. Saves for \(name) need attention: \(warning)", systemImage: "icloud.slash")
+                .font(.footnote).lineLimit(3).padding().frame(maxWidth: .infinity).background(.regularMaterial)
         } else if !model.queuedDownloads.isEmpty {
             Label("\(model.queuedDownloads.count) queued · One game downloads at a time\(model.runtimeBusy ? "; waiting for the game to close" : "")", systemImage: "list.bullet")
                 .font(.footnote).padding().frame(maxWidth: .infinity).background(.regularMaterial)
@@ -183,6 +195,7 @@ struct SteamLibraryView: View {
 
 private struct SteamGameDownloadView: View {
     @Environment(\.dismiss) private var dismiss
+    @State private var confirmSaveReset = false
     let entry: SteamLibraryEntry
     @ObservedObject var model: SteamLibraryModel
     let closeLibrary: () -> Void
@@ -207,6 +220,33 @@ private struct SteamGameDownloadView: View {
                         Text("Estimates from Steam. Resuming or repairing may download less; installation can need extra temporary space.")
                             .font(.caption)
                     }.font(.callout).foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label(model.serviceStatus[entry.id] ?? "Steam Cloud checks saves before launch and after exit", systemImage: "icloud")
+                        Toggle("Upload saves", isOn: Binding(
+                            get: { model.cloudPermissions(entry.id).upload },
+                            set: { model.setCloudPermissions(entry.id, upload: $0) })).disabled(model.runtimeBusy || model.servicesBusy)
+                        Toggle("Download saves", isOn: Binding(
+                            get: { model.cloudPermissions(entry.id).download },
+                            set: { model.setCloudPermissions(entry.id, download: $0) })).disabled(model.runtimeBusy || model.servicesBusy)
+                        Text("These settings apply to this game, including automatic sync. Turn uploads off while checking a cloud download.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text("Online play uses Valve's signed-in Steam client and the game's own servers. Availability depends on the game and its services.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if model.installedIDs.contains(entry.id) {
+                            HStack {
+                                Button("Sync saves") { Task { await model.syncSaves(entry.id) } }
+                                Button("Use cloud saves") { Task { await model.syncSaves(entry.id, preferCloud: true) } }
+                                    .disabled(!model.cloudPermissions(entry.id).download)
+                                Button("Reset saves", role: .destructive) { confirmSaveReset = true }
+                            }.disabled(model.runtimeBusy || model.servicesBusy || model.isPreparingValveClient)
+                            Text("Use cloud saves replaces conflicting local saves with the cloud copy. Replaced files are backed up.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        ForEach(model.dlc[entry.id] ?? []) { item in
+                            Label("\(item.name) · Owned · \(item.ready ? (item.hasDepots ? "Installed" : "Included with game") : "Update / repair required")",
+                                  systemImage: item.ready ? "checkmark.seal" : "arrow.down.circle")
+                        }
+                    }.font(.callout)
                     if let progress = model.progress[entry.id] {
                         VStack(alignment: .leading, spacing: 8) {
                             ProgressView(value: progress.fraction).tint(.cyan)
@@ -243,17 +283,25 @@ private struct SteamGameDownloadView: View {
                                     }
                                 }
                                 .buttonStyle(.borderedProminent)
-                                .disabled(model.runtimeBusy || model.isPreparingValveClient || !MadeiraDock.bundled)
+                                .disabled(model.servicesBusy || model.runtimeBusy || model.isPreparingValveClient || !MadeiraDock.bundled || !model.signedIn)
                             } else {
-                                let launches = entry.game.launches ?? []
+                                let launches = model.launchOptions(for: entry)
                                 let installedGame = MadeiraDock.games(drive: MadeiraDock.drive).first { $0.id == entry.id }
                                 let options = installedGame.map {
                                     SteamLibraryModel.installedLaunchOptions(launches, game: $0, drive: MadeiraDock.drive)
                                 } ?? []
                                 Group {
                                     if launches.isEmpty {
-                                        Label("Launch information is unavailable. Refresh the library and try again.", systemImage: "exclamationmark.circle")
-                                            .font(.footnote).foregroundStyle(.orange)
+                                        if model.loadingLaunchOptions.contains(entry.id) {
+                                            ProgressView("Loading this game's launch options…").font(.footnote)
+                                        } else {
+                                            Button("Load launch options", systemImage: "arrow.clockwise") {
+                                                Task { await model.loadInstalledLaunchOptions(entry) }
+                                            }
+                                            if let warning = model.serviceWarnings[entry.id] {
+                                                Text(warning).font(.caption).foregroundStyle(.orange)
+                                            }
+                                        }
                                     } else if options.isEmpty {
                                         Label("No installed Windows executable found. Update / repair this game.", systemImage: "exclamationmark.circle")
                                             .font(.footnote).foregroundStyle(.orange)
@@ -268,7 +316,7 @@ private struct SteamGameDownloadView: View {
                                     }
                                 }
                                 .buttonStyle(.borderedProminent)
-                                .disabled(model.runtimeBusy || model.isPreparingValveClient || !MadeiraDock.bundled)
+                                .disabled(model.servicesBusy || model.runtimeBusy || model.isPreparingValveClient || !MadeiraDock.bundled || !model.signedIn)
                             }
                         } else {
                             Button(model.runtimeBusy || !model.activeDownloads.isEmpty ? "Add to download queue" : (failure != nil ? "Retry download" : (isPartial || model.pausedDownloads.contains(entry.id) ? "Resume download" : "Download")), systemImage: "arrow.down.circle.fill") {
@@ -307,7 +355,17 @@ private struct SteamGameDownloadView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Close", systemImage: "xmark") { dismiss() } }
             }
-        }.frame(width: 620, height: 620)
+        }
+        .confirmationDialog("Reset local saves for \(entry.game.name)?", isPresented: $confirmSaveReset, titleVisibility: .visible) {
+            Button("Delete local saves and turn sync off", role: .destructive) {
+                Task { await model.resetLocalSaves(entry.id) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes this game's local Steam save files and turns Upload saves and Download saves off. Cloud saves stay unchanged; this deletion will not sync to Steam. To restore them later, turn Download saves on and choose Use cloud saves.")
+        }
+        .task(id: entry.id) { await model.loadInstalledLaunchOptions(entry) }
+        .frame(width: 620, height: 620)
     }
 
     private func selectButton(_ title: String, option: UInt32?) -> some View {

@@ -1,0 +1,174 @@
+--- /dev/null
++++ b/src/presence.h
+@@ -0,0 +1,30 @@
++/* SPDX-License-Identifier: GPL-3.0-or-later
++ * Copyright 2026 WineVision VR contributors
++ * Madeira Converter Exception: see LICENSE-EXCEPTION.md */
++#ifndef WVR_STEAM_PRESENCE_H
++#define WVR_STEAM_PRESENCE_H
++#include <stdbool.h>
++#include <stdint.h>
++
++struct dock_presence {
++    void *friends;
++    void *utils;
++    void (*computer_active)(void *, uint32_t);
++    uint32_t (*idle_seconds)(void *);
++    int32_t (*state)(void *);
++    void (*set_state)(void *, int32_t);
++    int32_t (*friend_count)(void *, int32_t);
++    uint64_t next_poll;
++    int32_t last_state, last_count;
++    uint32_t last_idle;
++    bool sampled;
++};
++bool dock_presence_poll(struct dock_presence *presence, uint64_t now,
++                        void (*event)(const char *, int32_t));
++#ifdef _WIN64
++#include "session.h"
++void dock_social_start(HMODULE module, void *engine, int32_t user, int32_t pipe,
++                       const struct dock_client_layout *layout, const struct sh_observer *observer);
++void dock_social_tick(uint64_t now, void (*event)(const char *, int32_t));
++#endif
++#endif
+--- /dev/null
++++ b/src/presence.c
+@@ -0,0 +1,94 @@
++/* SPDX-License-Identifier: GPL-3.0-or-later
++ * Copyright 2026 WineVision VR contributors
++ * Madeira Converter Exception: see LICENSE-EXCEPTION.md */
++#include "presence.h"
++
++/* The desktop UI normally publishes presence. A headless client must wake its
++ * friends session explicitly. Keep deliberate Busy/Invisible/etc. settings;
++ * only an inactive status (Offline, Away, Snooze) moves to Online during play.
++ * Neither friend identities nor lobby IDs are logged or changed here. */
++bool dock_presence_poll(struct dock_presence *p, uint64_t now,
++                        void (*event)(const char *, int32_t))
++{
++    if (!p || !p->friends || !p->state || !p->set_state || !p->friend_count || !event) return false;
++    if (p->sampled && now < p->next_poll) return true;
++    p->next_poll = now + 5000;
++    /* The engine auto-away timer is separate from the requested persona.
++     * Keep this host's active VR session alive, using the client's VR source
++     * enum (2). Never emit synthetic Windows input or alter other sessions. */
++    if (p->utils && p->computer_active && p->idle_seconds) {
++        uint32_t before = p->idle_seconds(p->utils);
++        p->computer_active(p->utils, 2);
++        uint32_t idle = p->idle_seconds(p->utils);
++        if (!p->sampled) event("session-social-idle-before", before <= INT32_MAX ? (int32_t)before : -1);
++        if (!p->sampled || idle != p->last_idle) event("session-social-idle-seconds", idle <= INT32_MAX ? (int32_t)idle : -1);
++        p->last_idle = idle;
++    }
++    int32_t state = p->state(p->friends);
++    if (state == 0 || state == 3 || state == 4 || (!p->sampled && state == 1)) {
++        event("session-social-previous-state", state);
++        p->set_state(p->friends, 1);
++        event("session-social-online-requested", 1);
++        state = p->state(p->friends);
++    }
++    int32_t count = p->friend_count(p->friends, 4); /* k_EFriendFlagImmediate */
++    if (!p->sampled || state != p->last_state) event("session-social-persona-state", state);
++    if (!p->sampled || count != p->last_count) event("session-social-friend-count", count >= 0 && count <= 65536 ? count : -1);
++    p->last_state = state; p->last_count = count; p->sampled = true;
++    return true;
++}
++
++#ifdef _WIN64
++#include <stdlib.h>
++#include <string.h>
++static struct dock_presence social;
++
++typedef void *(__thiscall *friends_getter)(void *, int32_t, int32_t);
++typedef void *(__thiscall *utils_getter)(void *, int32_t);
++void dock_social_start(HMODULE module, void *engine, int32_t user, int32_t pipe,
++                       const struct dock_client_layout *layout, const struct sh_observer *o)
++{
++    memset(&social, 0, sizeof(social));
++    const char *setting = getenv("MADEIRA_STEAM_ONLINE_PRESENCE");
++    if (setting && !strcmp(setting, "0")) { o->event("session-social-disabled", 1); return; }
++    /* Independently inspected January client, selected only after its complete
++     * SHA-256 gate. CSteamClient slot 13 returns CUserContext+0x20; its constructor
++     * stores IClientFriendsMap there. See the app's Steam integration notes.
++     * Do not guess these methods on another build, even if the interface exists.
++     */
++    if (!layout || strcmp(layout->sha256, "71b391fe9f3e2006cbc81a5c75eef3eb4186012deabfdb2c8b7e8d4850ecf640") ||
++        !dock_method_is((uintptr_t)module, engine, 13, 0x943510)) {
++        o->event("session-social-interface-ready", 0); return;
++    }
++    void *friends = ((friends_getter)(*(void ***)engine)[13])(engine, user, pipe);
++    if (!dock_method_is((uintptr_t)module, friends, 4, 0x768a20) ||
++        !dock_method_is((uintptr_t)module, friends, 5, 0x848460) ||
++        !dock_method_is((uintptr_t)module, friends, 7, 0x752d60)) {
++        o->event("session-social-interface-ready", 0); return;
++    }
++    social.friends = friends;
++    social.state = (int32_t (*)(void *))(*(void ***)friends)[4];
++    social.set_state = (void (*)(void *, int32_t))(*(void ***)friends)[5];
++    social.friend_count = (int32_t (*)(void *, int32_t))(*(void ***)friends)[7];
++    /* CSteamClient slot 14 accepts only a pipe, returning IClientUtilsMap.
++     * As with friends, verify the factory and both methods before any call.
++     * The January SetComputerActive has one uint32 source argument; older
++     * public reconstructions describe a different no-argument ABI. */
++    if (dock_method_is((uintptr_t)module, engine, 14, 0x945220)) {
++        void *utils = ((utils_getter)(*(void ***)engine)[14])(engine, pipe);
++        if (dock_method_is((uintptr_t)module, utils, 5, 0x76f3b0) &&
++            dock_method_is((uintptr_t)module, utils, 6, 0x83a060)) {
++            social.utils = utils;
++            social.idle_seconds = (uint32_t (*)(void *))(*(void ***)utils)[5];
++            social.computer_active = (void (*)(void *, uint32_t))(*(void ***)utils)[6];
++        }
++    }
++    o->event("session-social-activity-ready", social.utils != NULL);
++    o->event("session-social-interface-ready", 1);
++    dock_social_tick(o->now_ms(), o->event);
++}
++void dock_social_tick(uint64_t now, void (*event)(const char *, int32_t))
++{
++    (void)dock_presence_poll(&social, now, event);
++}
++#endif
+--- a/src/session.c
++++ b/src/session.c
+@@ -9,6 +9,7 @@
+ #include "launch.h"
+ #include "validation.h"
+ #include "auth.h"
++#include "presence.h"
+ #include <stdlib.h>
+ #include <string.h>
+ #include <stdio.h>
+@@ -288,6 +289,7 @@
+                 was_online = true;
+                 online_at = now;
+                 o->event("session-authenticated-online", 1);
++                dock_social_start(module, engine, user, pipe, layout, o);
+             }
+         } else if (was_online) {
+             if (!offline_since) offline_since = now;
+@@ -299,6 +301,7 @@
+                 o->event("session-authenticated-online", 0);
+             }
+         }
++        if (was_online && !offline_since) dock_social_tick(now, o->event);
+         /* Allow the real licence/app-info callbacks to arrive after logon.
+          * A true subscription is required; timeout never permits launch.
+          */
+--- a/src/launch.c
++++ b/src/launch.c
+@@ -7,6 +7,7 @@
+ #include "launch.h"
+ #include "scm.h"
+ #include "validation.h"
++#include "presence.h"
+ #include <stdio.h>
+ #include <string.h>
+ #include <wchar.h>
+@@ -294,6 +295,7 @@
+     int32_t logged_error = INT32_MIN;
+     result = 44;
+     while (!InterlockedCompareExchange(&interrupted, 0, 0)) {
++        dock_social_tick(o->now_ms(), o->event);
+         for (unsigned batch = 0; batch < 64; ++batch) {
+             struct sh_callback cb = {0};
+             if (!api->get_callback(pipe, &cb)) break;

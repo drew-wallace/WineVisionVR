@@ -13,6 +13,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import sanitize_prefix_snapshot as sanitizer
 import stage_resources as stage
+from verify_managed_network_dependencies import is_data_only_x64_pe
 from verify_source_checkout import verify_source_checkout
 
 
@@ -246,6 +247,19 @@ class ArchitectureTests(unittest.TestCase):
         self.assertFalse(stage.is_arm64ec_pe(self.path))
         self.image(machine=0xA641)
         self.assertTrue(stage.is_arm64ec_pe(self.path))
+
+    def test_data_only_forwarder_rejects_code_entry_point_and_truncation(self):
+        self.image()
+        self.assertTrue(is_data_only_x64_pe(self.path))
+        original = self.path.read_bytes()
+        for offset, value in [(0x58 + 4, 1), (0x58 + 16, 0x1000),
+                              (0x58 + 240 + 36, 0x20000000), (0x58 + 240 + 36, 0x20)]:
+            data = bytearray(original)
+            data[offset:offset + 4] = value.to_bytes(4, 'little')
+            self.path.write_bytes(data)
+            self.assertFalse(is_data_only_x64_pe(self.path))
+        self.path.write_bytes(original[:0x160])
+        self.assertFalse(is_data_only_x64_pe(self.path))
 
     def test_amd64_with_valid_chpe_is_arm64ec_not_plain_x64(self):
         for version in (1, 2):

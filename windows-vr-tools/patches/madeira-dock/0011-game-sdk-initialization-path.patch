@@ -1,0 +1,76 @@
+--- a/src/sdk_probe.c
++++ b/src/sdk_probe.c
+@@ -22,12 +22,18 @@
+     HMODULE sdk = LoadLibraryExW(path, NULL, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+     o->event("sdk-probe-library-ready", sdk != NULL);
+     if (!sdk) return 60;
+-    int32_t (*initialize)(char *) = (void *)GetProcAddress(sdk, "SteamAPI_InitFlat");
++    int32_t (*initialize)(const char *, char *) = (void *)GetProcAddress(sdk, "SteamInternal_SteamAPI_Init");
+     void (*shutdown)(void) = (void *)GetProcAddress(sdk, "SteamAPI_Shutdown");
+-    void (*callbacks)(void) = (void *)GetProcAddress(sdk, "SteamAPI_RunCallbacks");
+-    void *(*get_friends)(void) = (void *)GetProcAddress(sdk, "SteamAPI_SteamFriends_v017");
+-    void *(*get_user)(void) = (void *)GetProcAddress(sdk, "SteamAPI_SteamUser_v023");
+-    void *(*get_utils)(void) = (void *)GetProcAddress(sdk, "SteamAPI_SteamUtils_v010");
++    void (*manual_init)(void) = (void *)GetProcAddress(sdk, "SteamAPI_ManualDispatch_Init");
++    void (*manual_frame)(int32_t) = (void *)GetProcAddress(sdk, "SteamAPI_ManualDispatch_RunFrame");
++    bool (*manual_next)(int32_t, struct sh_callback *) = (void *)GetProcAddress(sdk, "SteamAPI_ManualDispatch_GetNextCallback");
++    void (*manual_free)(int32_t) = (void *)GetProcAddress(sdk, "SteamAPI_ManualDispatch_FreeLastCallback");
++    int32_t (*get_user_handle)(void) = (void *)GetProcAddress(sdk, "SteamAPI_GetHSteamUser");
++    int32_t (*get_pipe_handle)(void) = (void *)GetProcAddress(sdk, "SteamAPI_GetHSteamPipe");
++    void *(*create_client)(const char *) = (void *)GetProcAddress(sdk, "SteamInternal_CreateInterface");
++    void *(*get_friends)(void *, int32_t, int32_t, const char *) = (void *)GetProcAddress(sdk, "SteamAPI_ISteamClient_GetISteamFriends");
++    void *(*get_user)(void *, int32_t, int32_t, const char *) = (void *)GetProcAddress(sdk, "SteamAPI_ISteamClient_GetISteamUser");
++    void *(*get_utils)(void *, int32_t, const char *) = (void *)GetProcAddress(sdk, "SteamAPI_ISteamClient_GetISteamUtils");
+     bool (*logged_on)(void *) = (void *)GetProcAddress(sdk, "SteamAPI_ISteamUser_BLoggedOn");
+     uint32_t (*get_app)(void *) = (void *)GetProcAddress(sdk, "SteamAPI_ISteamUtils_GetAppID");
+     int32_t (*count)(void *, int32_t) = (void *)GetProcAddress(sdk, "SteamAPI_ISteamFriends_GetFriendCount");
+@@ -35,23 +41,32 @@
+     int32_t (*state)(void *, uint64_t) = (void *)GetProcAddress(sdk, "SteamAPI_ISteamFriends_GetFriendPersonaState");
+     const char *(*name)(void *, uint64_t) = (void *)GetProcAddress(sdk, "SteamAPI_ISteamFriends_GetFriendPersonaName");
+     bool (*game)(void *, uint64_t, struct sdk_game_info *) = (void *)GetProcAddress(sdk, "SteamAPI_ISteamFriends_GetFriendGamePlayed");
+-    if (!initialize || !shutdown || !callbacks || !get_friends || !get_user || !get_utils ||
++    if (!initialize || !shutdown || !manual_init || !manual_frame || !manual_next || !manual_free ||
++        !get_user_handle || !get_pipe_handle || !create_client || !get_friends || !get_user || !get_utils ||
+         !logged_on || !get_app || !count || !by_index || !state || !name || !game) return 60;
+     char app_text[16], error[1024] = {0};
+     snprintf(app_text, sizeof(app_text), "%u", app);
+     SetEnvironmentVariableA("SteamAppId", app_text);
+     SetEnvironmentVariableA("SteamGameId", app_text);
+-    int32_t result = initialize(error);
++    /* Match Steamworks.NET SteamAPI.InitEx: null interface-version list,
++     * then explicit SteamClient021 getters and manual callback dispatch. */
++    int32_t result = initialize(NULL, error);
+     memset(error, 0, sizeof(error)); /* Never log a potentially private SDK error string. */
+     o->event("sdk-probe-init-result", result);
+     if (result) return 61;
+-    void *friends = get_friends(), *user = get_user(), *utils = get_utils();
++    int32_t sdk_user = get_user_handle(), sdk_pipe = get_pipe_handle();
++    void *client = create_client("SteamClient021");
++    if (!client || sdk_user <= 0 || sdk_pipe <= 0) { shutdown(); return 62; }
++    void *friends = get_friends(client, sdk_user, sdk_pipe, "SteamFriends017");
++    void *user = get_user(client, sdk_user, sdk_pipe, "SteamUser023");
++    void *utils = get_utils(client, sdk_pipe, "SteamUtils010");
+     bool ready = friends && user && utils;
+     o->event("sdk-probe-interfaces-ready", ready);
+     if (!ready) { shutdown(); return 62; }
+     o->event("sdk-probe-app-matched", get_app(utils) == app);
+     o->event("sdk-probe-user-online", logged_on(user));
+     if (get_app(utils) != app || !logged_on(user)) { shutdown(); return 62; }
++    manual_init();
+     char target[128] = {0}, alternate[128] = {0};
+     GetEnvironmentVariableA("MADEIRA_STEAM_TARGET_FRIEND", target, sizeof(target));
+     GetEnvironmentVariableA("MADEIRA_STEAM_TARGET_FRIEND_ALT", alternate, sizeof(alternate));
+@@ -59,7 +74,12 @@
+     int prev[6] = {-1,-1,-1,-1,-1,-1};
+     while (o->now_ms() - begin < 25000) {
+         dock_frame_tick();
+-        callbacks();
++        manual_frame(sdk_pipe);
++        for (unsigned batch = 0; batch < 64; ++batch) {
++            struct sh_callback callback = {0};
++            if (!manual_next(sdk_pipe, &callback)) break;
++            manual_free(sdk_pipe);
++        }
+         for (unsigned batch = 0; batch < 64; ++batch) {
+             struct sh_callback callback = {0};
+             if (!api->get_callback(pipe, &callback)) break;

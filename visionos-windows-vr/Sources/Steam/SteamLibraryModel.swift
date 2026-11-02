@@ -23,6 +23,9 @@ final class SteamLibraryModel: ObservableObject {
     @Published private(set) var games: [SteamLibraryEntry] = []
     @Published private(set) var isLoadingLibrary = false
     @Published private(set) var installedIDs: Set<Int> = []
+    @Published private(set) var installedGames: [SteamLibraryEntry] = []
+    @Published private(set) var loadingLaunchOptions: Set<Int> = []
+    private var installedMetadata: [Int: SteamOwnedGame] = [:]
     @Published private(set) var progress: [Int: SteamDownloadProgress] = [:]
     @Published private(set) var activeDownloads: Set<Int> = []
     @Published private(set) var pausedDownloads: Set<Int> = []
@@ -37,7 +40,7 @@ final class SteamLibraryModel: ObservableObject {
             guard runtimeBusy != oldValue else { return }
             if runtimeBusy {
                 Task { @MainActor in
-                    guard self.runtimeBusy, !self.sessionReservedForLaunch else { return }
+                    guard self.runtimeBusy, !self.servicesBusy, !self.sessionReservedForLaunch else { return }
                     await self.prepareForLaunch()
                 }
             } else if !sessionReservedForLaunch {
@@ -51,7 +54,16 @@ final class SteamLibraryModel: ObservableObject {
     /// session has logged off and its socket has closed.
     var onPlaySelected: ((DockGame, UInt32) -> Void)?
 
+    @Published private(set) var onlineStatus = "Steam connects when the game starts"
+    @Published private(set) var servicesBusy = false
+    @Published private(set) var serviceStatus: [Int: String] = [:]
+    @Published private(set) var serviceWarnings: [Int: String] = [:]
+    @Published private(set) var cloudSettings: [Int: SteamCloudPermissions] = [:]
+    @Published private(set) var dlc: [Int: [SteamDLCStatus]] = [:]
     private let session = SteamSession()
+    private lazy var gameServices = SteamGameServices(session: session)
+    private var serviceAppID: Int?
+
     private lazy var fetcher = SteamLibraryFetcher(session: session)
     private lazy var downloader = DepotDownloader(session: session)
     private var downloadTasks: [Int: Task<Void, Never>] = [:]
@@ -186,9 +198,49 @@ final class SteamLibraryModel: ObservableObject {
     func refreshInstalled() {
         let records = MadeiraDock.games(drive: MadeiraDock.drive)
         installedIDs = Set(records.filter(\.installed).map(\.id))
+        installedMetadata = installedMetadata.filter { installedIDs.contains($0.key) }
+        installedGames = SteamInstalledLibrary.games(records: records,
+            metadata: games.map(\.game) + Array(installedMetadata.values)).map { SteamLibraryEntry(game: $0) }
+        SteamLog.event("[steam-library] local-installed games=\(installedGames.count) remote-refresh=\(isLoadingLibrary ? 1 : 0)")
+    }
+
+    /// Prefer refreshed local-card details, then the client's disk cache. This
+    /// remains available before a catalog refresh has produced any game cards.
+    func launchOptions(for entry: SteamLibraryEntry) -> [SteamLaunchOption] {
+        for options in [installedGames.first(where: { $0.id == entry.id })?.game.launches,
+                        entry.game.launches, games.first(where: { $0.id == entry.id })?.game.launches] {
+            if let options, !options.isEmpty { return options }
+        }
+        guard let game = MadeiraDock.games(drive: MadeiraDock.drive).first(where: { $0.id == entry.id }) else { return [] }
+        return SteamLocalAppInfo.launchOptions(appID: entry.id, game: game, drive: MadeiraDock.drive) ?? []
+    }
+
+    /// If this game has never been launched, the guest cache may not exist.
+    /// Fetch only its launch metadata, independently of the full catalog task.
+    func loadInstalledLaunchOptions(_ entry: SteamLibraryEntry) async {
+        guard signedIn, !runtimeBusy, !servicesBusy, installedIDs.contains(entry.id),
+              launchOptions(for: entry).isEmpty, !loadingLaunchOptions.contains(entry.id) else { return }
+        if sessionReservedForLaunch { resumeAfterLaunchFailure() }
+        let generation = accountGeneration
+        let loader = fetcher
+        loadingLaunchOptions.insert(entry.id)
+        defer { if generation == accountGeneration { loadingLaunchOptions.remove(entry.id) } }
+        do {
+            guard let info = try await loader.fetchAppInfo(appID: UInt32(entry.id)), !info.launches.isEmpty else {
+                throw DockError.message("Steam did not return launch options for this game. You can retry from its panel.")
+            }
+            guard generation == accountGeneration, !runtimeBusy, !sessionReservedForLaunch else { return }
+            installedMetadata[entry.id] = SteamOwnedGame(info)
+            refreshInstalled()
+            serviceWarnings.removeValue(forKey: entry.id)
+        } catch {
+            guard generation == accountGeneration, !runtimeBusy, !sessionReservedForLaunch else { return }
+            serviceWarnings[entry.id] = error.localizedDescription
+        }
     }
 
     func refreshLibrary() async {
+        refreshInstalled()
         guard signedIn else { return }
         await connectAndLoad()
     }
@@ -214,7 +266,13 @@ final class SteamLibraryModel: ObservableObject {
     private func clearAccountDownloadState() {
         queueAccount = nil
         games = []
-        installedIDs = []
+        dlc = [:]
+        serviceStatus = [:]
+        serviceWarnings = [:]
+        cloudSettings = [:]
+        installedMetadata = [:]
+        loadingLaunchOptions = []
+        refreshInstalled()
         progress = [:]
         activeDownloads = []
         pausedDownloads = []
@@ -230,7 +288,7 @@ final class SteamLibraryModel: ObservableObject {
     }
 
     private func connectAndLoad() async {
-        guard !sessionReservedForLaunch, !runtimeBusy, suspendingDownloads == 0 else { return }
+        guard !servicesBusy, !sessionReservedForLaunch, !runtimeBusy, suspendingDownloads == 0 else { return }
         guard !isLoadingLibrary else {
             reloadLibraryWhenIdle = true
             return
@@ -260,7 +318,36 @@ final class SteamLibraryModel: ObservableObject {
                 .sorted { $0.game.name.localizedCaseInsensitiveCompare($1.game.name) == .orderedAscending }
             refreshInstalled()
             restoreDownloadQueue(account: account!)
+            refreshCloudSettings()
             error = nil
+            SteamLog.event("[steam-library] loaded games=\(games.count) installed=\(installedIDs.count)")
+            let canContinue = { generation == self.accountGeneration && !self.sessionReservedForLaunch && !self.runtimeBusy }
+            await SteamLibraryMaintenance.run(result.map { Int($0.appID) }.filter { installedIDs.contains($0) },
+                canContinue: canContinue, operation: { id in
+                    if let info = try await libraryFetcher.fetchInstallInfo(appID: UInt32(id)) {
+                        guard canContinue() else { throw CancellationError() }
+                        self.dlc[id] = SteamDLCStatus.inspect(info: info, owned: libraryFetcher.ownedDLC, drive: MadeiraDock.drive)
+                    }
+                }, onFailure: { id, failure in self.serviceWarnings[id] = failure.localizedDescription })
+            // A failed save retry stays attached to that game. The library and
+            // restored download queue remain usable, including after uninstall.
+            do {
+                let pending = try gameServices.pendingApps()
+                await SteamLibraryMaintenance.run(pending, canContinue: canContinue,
+                    operation: { id in
+                        guard libraryFetcher.ownedApps.contains(UInt32(id)) else {
+                            throw DockError.message("Save upload remains pending because Steam has not confirmed ownership of app \(id).")
+                        }
+                        try await self.syncServices(id)
+                        self.serviceWarnings.removeValue(forKey: id)
+                    }, onFailure: { id, failure in
+                        self.serviceWarnings[id] = failure.localizedDescription
+                        self.serviceStatus[id] = failure.localizedDescription
+                        SteamLog.event("[steam-library] save-retry-held app=\(id)")
+                    })
+            } catch {
+                SteamLog.event("[steam-library] save-retry-journal-unavailable")
+            }
         } catch {
             if generation == accountGeneration, signedIn { self.error = SteamSignIn.message(error) }
         }
@@ -291,7 +378,7 @@ final class SteamLibraryModel: ObservableObject {
     }
 
     private func startNextDownload() {
-        guard signedIn, !runtimeBusy, !sessionReservedForLaunch,
+        guard signedIn, !servicesBusy, !runtimeBusy, !sessionReservedForLaunch,
               !isPreparingValveClient, !isLoadingLibrary, suspendingDownloads == 0,
               downloadTasks.isEmpty, let appID = queuedDownloads.first,
               !waitingForForeground.contains(appID) else { return }
@@ -328,6 +415,18 @@ final class SteamLibraryModel: ObservableObject {
                     }
                 guard generation == accountGeneration else { return }
                 refreshInstalled()
+                let content = SteamDLCStatus.inspect(info: app, owned: fetcher.ownedDLC, drive: MadeiraDock.drive)
+                dlc[appID] = content
+                guard content.allSatisfy(\.ready) else {
+                    throw DockError.message("Owned DLC did not finish installing. Retry Update / repair to complete it.")
+                }
+                if appID == RiskOfRain2HealthBarRepair.appID {
+                    guard let game = MadeiraDock.games(drive: MadeiraDock.drive).first(where: { $0.id == appID }) else {
+                        throw DockError.message("Risk of Rain 2's installed folder could not be found for the health-bar repair.")
+                    }
+                    try await RiskOfRain2HealthBarRepair.prepare(game: game, drive: MadeiraDock.drive)
+                    guard generation == accountGeneration else { return }
+                }
                 error = nil
                 queuedDownloads.removeAll { $0 == appID }
                 repairDownloads.remove(appID)
@@ -384,7 +483,7 @@ final class SteamLibraryModel: ObservableObject {
     }
 
     func prepareValveClient() async {
-        guard !isPreparingValveClient, !runtimeBusy else { return }
+        guard !servicesBusy, !isPreparingValveClient, !runtimeBusy else { return }
         let preserveLaunchReservation = sessionReservedForLaunch
         isPreparingValveClient = true
         sessionReservedForLaunch = true
@@ -460,7 +559,7 @@ final class SteamLibraryModel: ObservableObject {
     }
 
     func play(_ entry: SteamLibraryEntry, launchOption: UInt32? = nil) async {
-        guard !runtimeBusy, signedIn else { return }
+        guard !servicesBusy, !runtimeBusy, signedIn else { return }
         guard !activeDownloads.contains(entry.id),
               !DepotDownloader.hasPartialDownload(appID: UInt32(entry.id), steamApps: SteamInstallPaths.steamApps(drive: MadeiraDock.drive)) else {
             error = "Finish or resume this game's download before selecting it to play."
@@ -476,7 +575,7 @@ final class SteamLibraryModel: ObservableObject {
         do {
             try MadeiraDock.validate(game, drive: MadeiraDock.drive)
             error = nil
-            let launches = entry.game.launches ?? []
+            let launches = launchOptions(for: entry)
             guard !launches.isEmpty else {
                 error = "Launch information is unavailable. Refresh the library and try again."
                 resumeAfterLaunchFailure()
@@ -503,6 +602,7 @@ final class SteamLibraryModel: ObservableObject {
     }
 
     func signOut() async {
+        guard !servicesBusy, !runtimeBusy else { return }
         persistDownloadQueue()
         accountGeneration &+= 1
         let generation = accountGeneration
@@ -512,6 +612,179 @@ final class SteamLibraryModel: ObservableObject {
         guard generation == accountGeneration else { return }
         clearAccountDownloadState()
         SteamSignIn.signOut()
+    }
+
+    private var cloudSettingsAccount: UInt64? {
+        if session.steamID != 0 { return session.steamID }
+        guard let token = SteamSignIn.credentialsForDock()?.refreshToken else { return nil }
+        return try? MadeiraDock.subject(token)
+    }
+
+    func cloudPermissions(_ appID: Int) -> SteamCloudPermissions {
+        guard let account = cloudSettingsAccount else { return .init(upload: false, download: false) }
+        return cloudSettings[appID] ?? ((try? gameServices.permissions(appID, account: account)) ?? .init(upload: false, download: false))
+    }
+
+    private func refreshCloudSettings() {
+        guard let account = cloudSettingsAccount else { cloudSettings = [:]; return }
+        cloudSettings = Dictionary(uniqueKeysWithValues: installedIDs.map { id in
+            (id, (try? gameServices.permissions(id, account: account)) ?? .init(upload: false, download: false))
+        })
+    }
+
+    func setCloudPermissions(_ appID: Int, upload: Bool? = nil, download: Bool? = nil) {
+        guard !runtimeBusy, !servicesBusy, let account = cloudSettingsAccount else { return }
+        do {
+            try gameServices.setPermissions(appID, account: account, upload: upload, download: download)
+            serviceWarnings.removeValue(forKey: appID)
+            serviceStatus[appID] = "Cloud settings saved; applies to Sync saves and the next launch"
+        } catch { serviceWarnings[appID] = error.localizedDescription }
+        // A setting persisted before a client-config failure still stays off.
+        refreshCloudSettings()
+    }
+
+    func updateOnlineStatus(_ report: MadeiraDock.Report) {
+        let status: String
+        if DockOffline.networkDown { status = "Network unavailable; online play needs an internet connection" }
+        else if report.fields["session-offline-requested"] == "1" { status = "Steam started in offline mode" }
+        else if report.fields["session-authenticated-online"] == "1" {
+            switch report.fields["session-social-persona-state"].flatMap(Int.init) {
+            case 1:
+                if report.fields["session-friend-subscription-result"] == "1" {
+                    status = "Steam online · Friends connected"
+                } else if report.fields["session-friend-subscription-ready"] == "0" ||
+                            report.fields["session-friend-subscription-sent"] == "0" ||
+                            report.fields["session-friend-subscription-timeout"] == "1" ||
+                            report.fields["session-friend-subscription-result"] != nil {
+                    status = "Steam online · Live friends unavailable"
+                } else {
+                    status = "Steam online · Connecting friends"
+                }
+            case 2: status = "Steam online · Busy status"
+            case 3, 4: status = "Steam signed in · Away status"
+            case 7: status = "Steam signed in · Invisible status"
+            default: status = "Valve confirmed Steam online sign-in"
+            }
+        }
+        else { status = "Waiting for Steam online sign-in" }
+        if onlineStatus != status { onlineStatus = status }
+    }
+
+    /// Runs at actual launch, including launches restored from saved profiles.
+    /// runtimeBusy may already be true while the launcher prepares presentation.
+    func prepareGameServices(appID: Int, option: UInt32) async throws {
+        guard !servicesBusy else { throw DockError.message("Steam is already synchronizing saves.") }
+        servicesBusy = true
+        defer { servicesBusy = false }
+        await prepareForLaunch()
+        session.resume()
+        do {
+            try await session.ensureConnected()
+            _ = try await fetcher.fetchOwnedApps() // fresh ownership, including purchases/refunds
+            guard fetcher.ownedApps.contains(UInt32(appID)) else { throw DockError.message("Steam did not confirm ownership of this game.") }
+            try await syncServices(appID, launchOption: option)
+            serviceAppID = appID
+            await session.suspend()
+        } catch {
+            serviceStatus[appID] = error.localizedDescription
+            await session.suspend()
+            throw error
+        }
+    }
+
+    private func syncServices(_ appID: Int, launchOption: UInt32? = nil, preferCloud: Bool = false) async throws {
+        guard let game = MadeiraDock.games(drive: MadeiraDock.drive).first(where: { $0.id == appID }) else {
+            throw DockError.message("Steam app \(appID) is no longer installed. Its local saves are kept and its upload remains pending.")
+        }
+        guard let info = try await fetcher.fetchInstallInfo(appID: UInt32(appID)) else {
+            throw DockError.message("Steam did not return product information for \(game.name) (\(appID)). Saves remain on this device; retry Sync saves later.")
+        }
+        let content = SteamDLCStatus.inspect(info: info, owned: fetcher.ownedDLC, drive: MadeiraDock.drive)
+        dlc[appID] = content
+        if launchOption != nil, content.contains(where: { !$0.ready }) {
+            throw DockError.message("Owned DLC is missing or outdated. Update / repair this game before playing.")
+        }
+        if let launchOption, let option = info.launches.first(where: { $0.index == launchOption }),
+           let requirement = option.requiredDLC, !requirement.isEmpty, requirement != "0" {
+            guard let id = UInt32(requirement), fetcher.ownedApps.contains(id) else {
+                throw DockError.message("Steam did not confirm ownership of the DLC required by this launch option.")
+            }
+        }
+        if launchOption != nil { try gameServices.prepareClientSettings(appID) }
+        if info.cloudEnabled {
+            serviceStatus[appID] = "Synchronizing Steam Cloud…"
+            serviceStatus[appID] = try await gameServices.sync(game: game, info: info, preferCloud: preferCloud)
+            if launchOption != nil { try gameServices.markPending(appID) }
+        } else { serviceStatus[appID] = "This game does not advertise Steam Cloud support" }
+    }
+
+    func syncSaves(_ appID: Int, preferCloud: Bool = false) async {
+        guard !runtimeBusy, !servicesBusy else { return }
+        servicesBusy = true
+        defer { servicesBusy = false; resumeAfterLaunchFailure() }
+        await prepareForLaunch()
+        session.resume()
+        do {
+            try await session.ensureConnected()
+            _ = try await fetcher.fetchOwnedApps()
+            guard fetcher.ownedApps.contains(UInt32(appID)) else { throw DockError.message("Steam did not confirm ownership of this game.") }
+            try await syncServices(appID, preferCloud: preferCloud)
+            serviceWarnings.removeValue(forKey: appID)
+            error = nil
+        } catch { serviceStatus[appID] = error.localizedDescription; serviceWarnings[appID] = error.localizedDescription }
+    }
+
+    /// The view calls this only after a destructive-action confirmation.
+    func resetLocalSaves(_ appID: Int) async {
+        guard !runtimeBusy, !servicesBusy, !isPreparingValveClient, signedIn,
+              let account = cloudSettingsAccount else { return }
+        servicesBusy = true
+        defer { refreshCloudSettings(); servicesBusy = false; resumeAfterLaunchFailure() }
+        await prepareForLaunch()
+        session.resume()
+        do {
+            // Even a failed connection or metadata lookup must leave sync off.
+            try gameServices.setPermissions(appID, account: account, upload: false, download: false)
+            refreshCloudSettings()
+            try await session.ensureConnected()
+            _ = try await fetcher.fetchOwnedApps()
+            guard fetcher.ownedApps.contains(UInt32(appID)),
+                  let game = MadeiraDock.games(drive: MadeiraDock.drive).first(where: { $0.id == appID }),
+                  let info = try await fetcher.fetchInstallInfo(appID: UInt32(appID)) else {
+                throw DockError.message("Steam could not identify this game's save folders. No saves were removed.")
+            }
+            let count = try await gameServices.resetLocalSaves(game: game, info: info)
+            serviceStatus[appID] = "Local saves reset (\(count) files). Uploads and downloads are off. Cloud saves are unchanged."
+            serviceWarnings.removeValue(forKey: appID)
+            error = nil
+        } catch {
+            serviceStatus[appID] = "Reset did not finish: \(error.localizedDescription)"
+            serviceWarnings[appID] = serviceStatus[appID]
+        }
+    }
+
+    /// Called only after the native runtime confirms stop. A pending journal
+    /// remains if Wine services are still exiting or the network is unavailable.
+    func finishGameServices() async {
+        guard let appID = serviceAppID, !servicesBusy else { return }
+        serviceAppID = nil
+        servicesBusy = true
+        defer { servicesBusy = false }
+        session.resume()
+        do {
+            for _ in 0..<40 {
+                if wine_process_is_running() == 0 && wineserver_is_running() == 0 { break }
+                try await Task.sleep(for: .milliseconds(250))
+            }
+            guard wine_process_is_running() == 0, wineserver_is_running() == 0 else {
+                throw DockError.message("Saves are waiting for Wine to close; sync will retry next app start.")
+            }
+            try await session.ensureConnected()
+            _ = try await fetcher.fetchOwnedApps()
+            guard fetcher.ownedApps.contains(UInt32(appID)) else { throw DockError.message("Steam did not confirm ownership of this game.") }
+            try await syncServices(appID)
+        } catch { serviceStatus[appID] = error.localizedDescription; serviceWarnings[appID] = error.localizedDescription }
+        await session.suspend()
     }
 
     /// Releases the authenticated Steam connection before WineVision VR starts its
@@ -524,7 +797,7 @@ final class SteamLibraryModel: ObservableObject {
 
     /// Reconnects after a launch fails or a game session ends.
     func resumeAfterLaunchFailure() {
-        guard !runtimeBusy, !isPreparingValveClient else { return }
+        guard !servicesBusy, !runtimeBusy, !isPreparingValveClient else { return }
         sessionReservedForLaunch = false
         guard suspendingDownloads == 0 else {
             resumeWhenDownloadsStop = true

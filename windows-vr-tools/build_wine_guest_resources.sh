@@ -98,7 +98,7 @@ JOBS="${AVPPLAY_BUILD_JOBS:-4}" bash "$runtime_root/build/wine-pe/build-modules.
     dbghelp evr opengl32 d3d9 dxva2 glu32 ieframe sspicli psapi \
     dwmapi wsock32 avrt vcruntime140 msvcp140 mmdevapi \
     dwrite uiautomationcore oleacc uxtheme msimg32 schannel dsound \
-    dcomp ktmw32 mscoree wintypes \
+    dcomp ktmw32 mscoree normaliz wintypes \
     xinput1_1 xinput1_2 xinput1_3 xinput1_4 xinput9_1_0
 # The upstream module helper treats a dot in a module name as a file suffix;
 # use the explicit DLL target for the Windows Gaming Input WinRT backend.

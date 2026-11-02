@@ -1,0 +1,29 @@
+--- a/src/presence.c
++++ b/src/presence.c
+@@ -92,6 +92,10 @@
+         !dock_method_is((uintptr_t)module, engine, 13, 0x943510)) {
+         o->event("session-social-interface-ready", 0); return;
+     }
++    /* Read-only mode check: friendsuihelpers.cpp routes SetPersonaStateInternal
++     * through desktop UI events when this genuine client mode is enabled. */
++    bool (*web_ui)(void) = (bool (*)(void))((uintptr_t)module + 0x68f550);
++    o->event("session-social-web-ui", web_ui());
+     void *friends = ((friends_getter)(*(void ***)engine)[13])(engine, user, pipe);
+     if (!dock_method_is((uintptr_t)module, friends, 4, 0x768a20) ||
+         !dock_method_is((uintptr_t)module, friends, 5, 0x848460) ||
+@@ -158,6 +162,7 @@
+         reconnect_pending = false;
+         if (social.state(social.friends) == 1) {
+             social.set_state(social.friends, 0);
++            event("session-social-reconnect-offline-state", social.state(social.friends));
+             reconnect_until = now + 1500;
+             event("session-social-reconnect-started", 1);
+         }
+@@ -167,6 +172,7 @@
+         reconnect_until = 0;
+         /* Preserve a deliberate Busy/Invisible choice made during the wait. */
+         if (social.state(social.friends) == 0) social.set_state(social.friends, 1);
++        event("session-social-reconnect-online-state", social.state(social.friends));
+         event("session-social-reconnect-finished", 1);
+     }
+     (void)dock_presence_poll(&social, now, event);

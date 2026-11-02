@@ -1,6 +1,7 @@
 using System.Reflection.Emit;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Globalization;
 
 // Reaching Main is itself a checkpoint: the game's earlier CoreCLR failure
 // occurred before any managed entry point. No GC or W^X overrides are installed.
@@ -28,7 +29,7 @@ internal static class Program
         return method.CreateDelegate<Func<int>>();
     }
 
-    public static int Main()
+    public static int Main(string[] args)
     {
         using var journal = new StreamWriter(Path.Combine(AppContext.BaseDirectory, "managed-result.txt")) { AutoFlush = true };
         void Note(string text) { journal.WriteLine(text); Console.WriteLine(text); }
@@ -46,6 +47,20 @@ internal static class Program
             var names = new Dictionary<string, int>(StringComparer.CurrentCultureIgnoreCase) { ["Loader"] = 42 };
             if (names["loader"] != 42) throw new InvalidOperationException("Culture-aware dictionary failed");
             Note("CHECK culture-aware-loader-dictionary pass");
+            // SslStream uses this Windows NLS path before negotiating TLS.
+            var idn = new IdnMapping();
+            if (idn.GetAscii("bücher.example") != "xn--bcher-kva.example")
+                throw new InvalidOperationException("IDN hostname normalization failed");
+            Note("CHECK tls-hostname-normalization pass");
+            if (args.Contains("--https"))
+            {
+                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+                using var response = http.GetAsync("https://api.steampowered.com/ISteamWebAPIUtil/GetServerInfo/v1/").GetAwaiter().GetResult();
+                response.EnsureSuccessStatusCode();
+                var body = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+                if (!body.Contains("servertime")) throw new InvalidOperationException("Unexpected time-server response");
+                Note("CHECK managed-https-server-time pass");
+            }
             var roots = Enumerable.Range(0, 2048).Select(i => new Node { Value = i }).ToArray();
             GC.Collect(2, GCCollectionMode.Forced, true, true);
             for (int iteration = 1; iteration <= 48; ++iteration)

@@ -1,0 +1,21 @@
+--- a/src/presence.c
++++ b/src/presence.c
+@@ -129,6 +129,18 @@
+         friend_name = (const char *(*)(void *, uint64_t))(*(void ***)friends)[14];
+     const char *reconnect = getenv("MADEIRA_STEAM_SOCIAL_RECONNECT");
+     reconnect_pending = reconnect && !strcmp(reconnect, "1");
++    const char *chat = getenv("MADEIRA_STEAM_CHAT_DESTINATION");
++    if (chat && !strcmp(chat, "1") && dock_method_is((uintptr_t)module, engine, 8, layout->engine_user)) {
++        void *client_user = ((friends_getter)(*(void ***)engine)[8])(engine, user, pipe);
++        if (dock_method_is((uintptr_t)module, client_user, 27, 0x84c300) &&
++            dock_method_is((uintptr_t)module, client_user, 28, 0x8166f0)) {
++            bool (*primary)(void *) = (bool (*)(void *))(*(void ***)client_user)[28];
++            void (*destination)(void *, bool) = (void (*)(void *, bool))(*(void ***)client_user)[27];
++            o->event("session-social-primary-before", primary(client_user));
++            destination(client_user, true);
++            o->event("session-social-primary-after", primary(client_user));
++        } else o->event("session-social-chat-ready", 0);
++    }
+     o->event("session-social-info-request-ready", request_info && friend_state);
+     o->event("session-social-game-info-ready", friend_at && friend_game);
+     o->event("session-social-activity-ready", social.utils != NULL);

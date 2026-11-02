@@ -5,7 +5,7 @@ options:
     visionOS: "27.0"
 settings:
   base:
-    CURRENT_PROJECT_VERSION: "62"
+    CURRENT_PROJECT_VERSION: "64"
     MARKETING_VERSION: "0.1.0"
 packages:
   WindowsVRCore:
@@ -53,6 +53,8 @@ targets:
         WVRDiagnostics: false
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
+        # Game audio must continue when visionOS backgrounds an out-of-view window.
+        UIBackgroundModes: [audio]
         NSBluetoothAlwaysUsageDescription: Connects to your Steam Controller so its buttons, sticks and triggers can control Windows games.
         GCSupportsControllerUserInteraction: true
         GCSupportedGameControllers:
@@ -60,6 +62,9 @@ targets:
           - ProfileName: SpatialGamepad
     sources:
       - path: Sources
+      - path: Resources/GameCompatibility
+        type: folder
+        buildPhase: resources
       - path: ${AVPPLAY_RUNTIME_SOURCE}/app/Madeira/madeira-jit.js
         buildPhase: resources
       - path: Resources/Runtime
@@ -96,6 +101,9 @@ targets:
           copyFiles:
             destination: resources
             subpath: arm64ec-windows
+      - path: Resources/ANGLECompatibility
+        type: folder
+        buildPhase: resources
       - path: Resources/WindowsVR
         type: folder
         buildPhase: resources
@@ -184,6 +192,8 @@ targets:
       - path: ${AVPPLAY_RUNTIME_SOURCE}/app/Madeira/AVPPlayWineBuild.c
       - path: ${AVPPLAY_RUNTIME_SOURCE}/app/Madeira/IOSDisplayShim.m
       - path: ${AVPPLAY_RUNTIME_SOURCE}/app/Madeira/Winios
+        excludes: [Winios.m]
+      - path: ../windows-runtime-plugin/WindowsVRDesktopCompositor.m
     dependencies:
       - target: WindowsVRNativeBridge
       - package: WindowsVRMetal

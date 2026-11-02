@@ -64,6 +64,7 @@ final class LauncherModel {
     var renderingPresetDraft: WindowsVRRenderingPreset = .automatic
     let hardwareCapabilities = WindowsVRHardwareCapabilities.current
     var renderScaleDraft: Float = 1
+    var desktopAspectRatioDraft: WindowsDesktopAspectRatio = .automatic
     var presentationModeDraft: WindowsPresentationMode = .immersiveVR
     private(set) var desktopPresentationVisible = false
     private(set) var desktopSurfaceReady = false
@@ -92,7 +93,7 @@ final class LauncherModel {
         // Recover the previous attempt before cleanup or a new launch can
         // rotate its global runtime log.
         if let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
-            angleCompatibilityAvailable = WindowsVRAngleTrial.hasCachedAssets(in: documents)
+            angleCompatibilityAvailable = WindowsVRAngleTrial.hasAvailableAssets(in: documents)
             WindowsVRAngleTrial.adoptInstalledProfile(available: angleCompatibilityAvailable)
             do {
                 let diagnostics = try SessionDiagnostics(documentsDirectory: documents)
@@ -117,6 +118,7 @@ final class LauncherModel {
     func recoverAngleTrialIfIdle() {
         guard !isLaunching, !hasAcceptedLaunch, wine_process_is_running() == 0, wineserver_is_running() == 0,
               let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        angleCompatibilityAvailable = WindowsVRAngleTrial.hasAvailableAssets(in: documents)
         do {
             try WindowsVRAngleTrial.recover(drive: MadeiraDock.drive, ledger: WindowsVRAngleTrial.ledger(in: documents))
         } catch {
@@ -209,6 +211,7 @@ final class LauncherModel {
             selectedLibraryEntryID = nil
             selectedProfileID = nil
             renderScaleDraft = 1
+            desktopAspectRatioDraft = .automatic
             renderingPresetDraft = .automatic
             profileNameDraft = L("Default", "Standard")
             launchError = nil
@@ -304,6 +307,7 @@ final class LauncherModel {
         selectedLibraryEntryID = nil
         selectedProfileID = nil
         renderScaleDraft = 1
+        desktopAspectRatioDraft = .automatic
         renderingPresetDraft = .automatic
         profileNameDraft = L("Default", "Standard")
         launchArgumentsText = Self.argumentText(game.manifest.launchArguments)
@@ -331,11 +335,13 @@ final class LauncherModel {
             environment: manifest.environment,
             renderScale: renderScaleDraft,
             presentation: presentationModeDraft,
-            renderingPreset: renderingPresetDraft
+            renderingPreset: renderingPresetDraft,
+            desktopAspectRatio: desktopAspectRatioDraft
         )
         var updated = library
-        if let index = updated.firstIndex(where: { $0.manifest.id == manifest.id }) {
+        if let index = updated.firstIndex(where: { $0.matchesGame(manifest, steamAppID: selectedSteamAppID) }) {
             updated[index].manifest = manifest
+            updated[index].steamAppID = selectedSteamAppID
             updated[index].folderBookmark = bookmark
             if updated[index].profiles.isEmpty {
                 updated[index].profiles = [defaultProfile]
@@ -349,7 +355,8 @@ final class LauncherModel {
                 manifest: manifest,
                 folderBookmark: bookmark,
                 profiles: [defaultProfile],
-                selectedProfileID: defaultProfile.id
+                selectedProfileID: defaultProfile.id,
+                steamAppID: selectedSteamAppID
             )
             updated.append(entry)
             selectedLibraryEntryID = entry.id
@@ -391,12 +398,14 @@ final class LauncherModel {
             if let profile {
                 manifest = try profile.applying(to: entry.manifest)
                 renderScaleDraft = profile.renderScale
+                desktopAspectRatioDraft = profile.desktopAspectRatio
                 renderingPresetDraft = profile.renderingPreset ?? .automatic
                 presentationModeDraft = profile.presentation
                 profileNameDraft = profile.name
                 launchArgumentsText = Self.argumentText(profile.launchArguments)
             } else {
                 renderScaleDraft = 1
+                desktopAspectRatioDraft = .automatic
                 renderingPresetDraft = .automatic
                 profileNameDraft = L("Default", "Standard")
                 launchArgumentsText = Self.argumentText(entry.manifest.launchArguments)
@@ -427,8 +436,11 @@ final class LauncherModel {
         // Reconcile every time: a previous in-memory game must not survive a
         // switch to a different saved entry. Ambiguous names require re-selection.
         guard manifest.id == "steam.shared" else { steamSelection = nil; return }
+        let savedAppID = selectedEntry?.steamAppID
         let matches = MadeiraDock.games(drive: MadeiraDock.drive)
-            .filter { $0.installed && $0.name == manifest.title }
+            .filter { game in
+                game.installed && (savedAppID.map { game.id == $0 } ?? (game.name == manifest.title))
+            }
         guard matches.count == 1, let game = matches.first else {
             steamSelection = nil
             launchLog.notice("Steam selection not restored: expected one installed game named \(manifest.title), found \(matches.count)")
@@ -462,6 +474,7 @@ final class LauncherModel {
         manifest = try profile.applying(to: entry.manifest)
         selectedProfileID = profile.id
         renderScaleDraft = profile.renderScale
+        desktopAspectRatioDraft = profile.desktopAspectRatio
         renderingPresetDraft = profile.renderingPreset ?? .automatic
         presentationModeDraft = profile.presentation
         profileNameDraft = profile.name
@@ -497,7 +510,8 @@ final class LauncherModel {
             environment: baseManifest.environment,
             renderScale: renderScaleDraft,
             presentation: presentationModeDraft,
-            renderingPreset: renderingPresetDraft
+            renderingPreset: renderingPresetDraft,
+            desktopAspectRatio: desktopAspectRatioDraft
         )
         var updated = library
         guard let index = updated.firstIndex(where: { $0.id == entry.id }) else {
@@ -513,6 +527,7 @@ final class LauncherModel {
         try persist(updated)
         selectedProfileID = profile.id
         renderScaleDraft = profile.renderScale
+        desktopAspectRatioDraft = profile.desktopAspectRatio
         renderingPresetDraft = profile.renderingPreset ?? .automatic
         presentationModeDraft = profile.presentation
         profileNameDraft = profile.name
@@ -537,6 +552,7 @@ final class LauncherModel {
         if let profile = updated[index].selectedProfile {
             manifest = try profile.applying(to: updated[index].manifest)
             renderScaleDraft = profile.renderScale
+            desktopAspectRatioDraft = profile.desktopAspectRatio
             renderingPresetDraft = profile.renderingPreset ?? .automatic
             presentationModeDraft = profile.presentation
             profileNameDraft = profile.name
@@ -545,6 +561,7 @@ final class LauncherModel {
             manifest = updated[index].manifest
             presentationModeDraft = updated[index].manifest.presentation
             renderScaleDraft = 1
+            desktopAspectRatioDraft = .automatic
             renderingPresetDraft = .automatic
             profileNameDraft = L("Default", "Standard")
             launchArgumentsText = Self.argumentText(updated[index].manifest.launchArguments)
@@ -567,6 +584,7 @@ final class LauncherModel {
             gameFolderName = nil
             launchArgumentsText = "[]"
             renderScaleDraft = 1
+            desktopAspectRatioDraft = .automatic
             renderingPresetDraft = .automatic
             profileNameDraft = L("Default", "Standard")
         }
@@ -673,9 +691,13 @@ final class LauncherModel {
             gameFolderName = game.installDir
             selectedLibraryEntryID = nil
             selectedProfileID = nil
+            desktopAspectRatioDraft = .automatic
             launchArgumentsText = "[]"
             steamSelection = (game, launchOption)
             rememberSteamLaunchOption(launchOption, for: game)
+            if let saved = library.first(where: { $0.matchesGame(selected, steamAppID: game.id) }) {
+                try selectLibraryEntry(id: saved.id)
+            }
             launchError = nil
         } catch { showImportError(error) }
     }
@@ -728,6 +750,7 @@ final class LauncherModel {
     }
 
     private static func configureAudioEnvironment() throws {
+        WindowsVRAudioDiagnostics.start { wine_process_is_running() != 0 }
         // The JIT helper uses a background audio session. Both the host and
         // the preserved runtime's legacy activation must allow it to continue.
         guard wvr_audio_session_install_mixing_policy_v1() == 0 else {
@@ -741,6 +764,7 @@ final class LauncherModel {
         try audio.setPreferredSampleRate(48_000)
         try audio.setActive(true)
         launchLog.notice("Audio session: mixing enabled; actual rate=\(audio.sampleRate)Hz output latency=\(audio.outputLatency)s")
+        WindowsVRAudioDiagnostics.snapshot("activated")
     }
 
     private static var guestDisplayLayer: CAMetalLayer?
@@ -772,6 +796,10 @@ final class LauncherModel {
             launchError = nil
             defer { isLaunching = false }
             guard runtime.isAvailable else { throw LauncherFailure.runtimePluginMissing }
+            if let selection = launchSelection, selection.game.id == RiskOfRain2HealthBarRepair.appID {
+                try await RiskOfRain2HealthBarRepair.prepare(game: selection.game, drive: MadeiraDock.drive)
+                launchLog.notice("Risk of Rain 2 health-bar repair prepared before launch")
+            }
             if WindowsVRAngleTrial.enabled, let selection = launchSelection, selection.game.id == 2868840 {
                 try MadeiraDock.validate(selection.game, drive: MadeiraDock.drive)
                 guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
@@ -804,6 +832,11 @@ final class LauncherModel {
                 throw WindowsVRLibraryError.invalidProfileArguments
             }
             WindowsVRLaunchRendering.configure(preset: renderingPresetDraft)
+            let initialDisplay = desktopAspectRatioDraft.initialDisplaySize
+            let displayEnvironment = WindowsVRTranslationEnvironment.desktopDisplayEnvironment(
+                isDesktop: launchManifest.presentation == .desktop,
+                width: Int(initialDisplay.width), height: Int(initialDisplay.height),
+                inherited: WindowsVRTranslationEnvironment.inheritedDisplayEnvironment)
             let controllerEnvironment = WindowsVRTranslationEnvironment.desktopControllerEnvironment(
                 isDesktop: launchManifest.presentation == .desktop, steamAppID: steamSelection?.game.id,
                 inherited: WindowsVRTranslationEnvironment.inheritedControllerEnvironment)
@@ -811,8 +844,21 @@ final class LauncherModel {
             if !controllerEnvironment.isEmpty {
                 launchLog.notice("Desktop controller compatibility: Windows HID and XInput for Risk of Rain 2")
             }
+            var previousDisplayWidth: Int32 = 0, previousDisplayHeight: Int32 = 0
+            winios_screen_size(&previousDisplayWidth, &previousDisplayHeight)
+            for (key, value) in displayEnvironment { setenv(key, value, 1) }
+            if !displayEnvironment.isEmpty {
+                let display = desktopAspectRatioDraft.initialDisplaySize
+                winios_display_mode_changed(Int32(display.width), Int32(display.height))
+                launchLog.notice("Desktop monitor default \(Int(display.width))x\(Int(display.height)); aspect=\(desktopAspectRatioDraft.rawValue)")
+            }
             defer {
+                // A failure before runtime acceptance can still select another game.
                 if !hasAcceptedLaunch { for key in controllerEnvironment.keys { unsetenv(key) } }
+                if !hasAcceptedLaunch && !displayEnvironment.isEmpty {
+                    for key in displayEnvironment.keys { unsetenv(key) }
+                    winios_display_mode_changed(previousDisplayWidth, previousDisplayHeight)
+                }
             }
             try await preparePresentation()
             launchLog.notice("Launch: presentation ready (mode=\(launchManifest.presentation.rawValue), immersiveOpen=\(self.immersiveSpaceIsOpen), desktopReady=\(self.desktopSurfaceReady))")
@@ -833,6 +879,12 @@ final class LauncherModel {
                     throw DockError.message("Select an installed Steam game and sign in again before launching.")
                 }
                 try MadeiraDock.validate(selection.game, drive: MadeiraDock.drive)
+                if LaunchDiagnostics.automatedLaunchEnabled,
+                   ProcessInfo.processInfo.environment["WVR_STEAM_SOCIAL_PROBE"] == "1" {
+                    launchLog.notice("Steam social diagnostic: login only; game and cloud sync skipped")
+                } else {
+                    try await SteamLibraryModel.shared.prepareGameServices(appID: selection.game.id, option: selection.option)
+                }
                 try MadeiraDock.writeHandoff(account: credentials.accountName, token: credentials.refreshToken, appID: selection.game.id)
                 MadeiraDock.configure(selection.game, launchOption: selection.option)
             }
@@ -862,6 +914,7 @@ final class LauncherModel {
             beginShaderWarmupMonitoring(manifest: launchManifest, gameDirectory: gameDirectory)
             if launchManifest.presentation == .immersiveVR && (!immersiveSpaceIsOpen || immersiveSpaceClosedDuringLaunch) {
                 try await runtime.stop()
+                await SteamLibraryModel.shared.finishGameServices()
                 finishTestSession(outcome: .stopped, reason: "Stop confirmed after immersive presentation closed during launch")
                 hasAcceptedLaunch = false
                 requiresRestart = true
@@ -942,9 +995,10 @@ final class LauncherModel {
         if let run {
             probeEnvironment["WINEVISION_PROBE_RUN_ID"] = run
         }
+        let probeArguments = name == "managed" && ProcessInfo.processInfo.environment["WVR_MANAGED_HTTPS_PROBE"] == "1" ? ["--https"] : []
         let probe = try WindowsGameManifest(id: "winevision.probe." + name, title: "Compatibility probe: " + name,
             executableRelativePath: executable, backend: .windowsWineFEX, graphics: .direct3D11,
-            launchArguments: [], environment: probeEnvironment,
+            launchArguments: probeArguments, environment: probeEnvironment,
             presentation: .desktop, guestArchitecture: .x64, schemaVersion: 1)
         releaseGameDirectoryAccess()
         manifest = probe
@@ -956,8 +1010,9 @@ final class LauncherModel {
         selectedLibraryEntryID = nil
         selectedProfileID = nil
         renderScaleDraft = 1
+        desktopAspectRatioDraft = .automatic
         renderingPresetDraft = .automatic
-        launchArgumentsText = "[]"
+        launchArgumentsText = probeArguments.isEmpty ? "[]" : "[\"--https\"]"
         launchError = nil
     }
 
@@ -989,6 +1044,7 @@ final class LauncherModel {
         selectedLibraryEntryID = nil
         selectedProfileID = nil
         renderScaleDraft = 1
+        desktopAspectRatioDraft = .automatic
         renderingPresetDraft = .automatic
         launchArgumentsText = "[]"
         launchError = nil
@@ -1032,6 +1088,7 @@ final class LauncherModel {
         selectedLibraryEntryID = nil
         selectedProfileID = nil
         renderScaleDraft = 1
+        desktopAspectRatioDraft = .automatic
         renderingPresetDraft = .automatic
         launchArgumentsText = "[]"
         launchError = nil
@@ -1078,6 +1135,7 @@ final class LauncherModel {
         defer { isStopping = false }
         do {
             try await runtime.stop()
+            await SteamLibraryModel.shared.finishGameServices()
             finishTestSession(outcome: .stopped, reason: "Native stop confirmed after immersive presentation closed")
             hasAcceptedLaunch = false
             requiresRestart = true
@@ -1100,6 +1158,7 @@ final class LauncherModel {
         defer { isStopping = false }
         do {
             try await runtime.stop()
+            await SteamLibraryModel.shared.finishGameServices()
             finishTestSession(outcome: .stopped, reason: "User-requested native stop confirmed")
             hasAcceptedLaunch = false
             requiresRestart = true
@@ -1289,6 +1348,9 @@ final class LauncherModel {
         let base = try selectedProfile?.applying(to: selectedEntry?.manifest ?? manifest) ?? manifest
         var environment = base.environment
         if base.id == "steam.shared", let appID = selectedSteamAppID {
+            // Reapply missing compatibility defaults after loading a saved
+            // profile, which may predate the game's startup workaround.
+            environment = Self.steamCompatibilityEnvironment(appID: appID, base: environment)
             environment = WindowsVRAngleTrial.environment(appID: appID,
                 enabled: WindowsVRAngleTrial.enabled, base: environment)
         }
@@ -1327,13 +1389,20 @@ final class LauncherModel {
                 }
             }
         }
+        var launchArguments = draftArguments
+        // This host has no desktop friends UI to handle persona-state events.
+        // Let Valve's client publish presence directly for every Steam launch,
+        // including launches restored from saved profiles.
+        if base.id == "steam.shared", !launchArguments.contains("-nofriendsui") {
+            launchArguments.append("-nofriendsui")
+        }
         return try WindowsGameManifest(
             id: base.id,
             title: base.title,
             executableRelativePath: base.executableRelativePath,
             backend: base.backend,
             graphics: base.graphics,
-            launchArguments: draftArguments,
+            launchArguments: launchArguments,
             environment: environment,
             presentation: presentationModeDraft,
             guestArchitecture: guestArchitecture,
@@ -1499,6 +1568,7 @@ final class LauncherModel {
 
     private func refreshRuntimeStatus() {
         let snapshot = runtime.nativeStatus()
+        if manifest?.id == "steam.shared" { SteamLibraryModel.shared.updateOnlineStatus(MadeiraDock.pollReport()) }
         if manifest?.id == "steam.shared", let failure = MadeiraDock.pollReport().failure {
             if launchError != failure {
                 launchLog.error("Steam launch failure: \(failure)")
@@ -1522,6 +1592,7 @@ final class LauncherModel {
             stopRequested = true
             runtimeStatus = L("Exit requested; waiting for the guest and Wine process", "Beenden angefordert; warte auf Gast- und Wine-Prozess")
         case 6:
+            Task { await SteamLibraryModel.shared.finishGameServices() }
             recordLifecycleEvent("native runtime transitioned to stopped")
             finishTestSession(outcome: .stopped, reason: "Native runtime stopped; game result unverified")
             stopRequested = false
@@ -1531,6 +1602,7 @@ final class LauncherModel {
             statusMonitor?.cancel()
             releaseGameDirectoryAccess()
         case 7:
+            Task { await SteamLibraryModel.shared.finishGameServices() }
             recordLifecycleEvent("native runtime transitioned to failed")
             if let error = snapshot.lastError { LaunchLogFile.append("runtime-failure", String(error.prefix(768))) }
             finishTestSession(outcome: .failed, reason: "Native runtime reported failure")

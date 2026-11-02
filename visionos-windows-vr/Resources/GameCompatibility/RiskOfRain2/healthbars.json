@@ -1,0 +1,202 @@
+{
+  "schemaVersion": 1,
+  "steamAppID": 632360,
+  "revision": "healthbars-1",
+  "packages": [
+    {
+      "id": "bepinex",
+      "url": "https://thunderstore.io/package/download/bbepis/BepInExPack/5.4.2121/",
+      "bytes": 650842,
+      "sha256": "26bf7c65ade04e1dee479b6e8ec29725167b19a6a75425bba2d7e05095d7314a"
+    },
+    {
+      "id": "healthbars",
+      "url": "https://thunderstore.io/package/download/LevTeam/MacosHealthbarsFix/1.0.27/",
+      "bytes": 57527,
+      "sha256": "f3028a27c86cadee82ed2d0780f2bb53fd07736b698641a8b4a4308e999f094b"
+    },
+    {
+      "id": "json",
+      "url": "https://api.nuget.org/v3-flatcontainer/newtonsoft.json/13.0.4/newtonsoft.json.13.0.4.nupkg",
+      "bytes": 2484726,
+      "sha256": "f09081d457405baf35a973fa0c50d6bf272ed683f2568c5a620a49da952f6529"
+    }
+  ],
+  "assets": [
+    {
+      "package": "bepinex",
+      "member": "BepInExPack/.doorstop_version",
+      "path": ".doorstop_version",
+      "bytes": 5,
+      "sha256": "b4116d6e880009dc1440ddab7ec054bcea529aea394ec5bab7943b415a359281"
+    },
+    {
+      "package": "bepinex",
+      "member": "BepInExPack/BepInEx/config/BepInEx.DO_NOT_MODIFY.cfg",
+      "path": "BepInEx/config/BepInEx.DO_NOT_MODIFY.cfg",
+      "bytes": 491,
+      "sha256": "f5a1a52a7812b1294c1cac923cbc4bd946f0f228b8dc81cae25a3fbbb4673dfb"
+    },
+    {
+      "package": "bepinex",
+      "member": "BepInExPack/BepInEx/core/0Harmony.dll",
+      "path": "BepInEx/core/0Harmony.dll",
+      "bytes": 204800,
+      "sha256": "1a21cc03424fc82c3dd1346905d16494536b9595ae4162228d99fb7c285c1031"
+    },
+    {
+      "package": "bepinex",
+      "member": "BepInExPack/BepInEx/core/0Harmony.xml",
+      "path": "BepInEx/core/0Harmony.xml",
+      "bytes": 267107,
+      "sha256": "d1f02fc3ada3a13da307de421225bfe56ebe24064370980979391c4be021672f"
+    },
+    {
+      "package": "bepinex",
+      "member": "BepInExPack/BepInEx/core/0Harmony20.dll",
+      "path": "BepInEx/core/0Harmony20.dll",
+      "bytes": 111616,
+      "sha256": "8af1766fd32e477789dfba83f1907340df786adc81302360e39630ffc4a7407f"
+    },
+    {
+      "package": "bepinex",
+      "member": "BepInExPack/BepInEx/core/BepInEx.Bootstrap.dll",
+      "path": "BepInEx/core/BepInEx.Bootstrap.dll",
+      "bytes": 4608,
+      "sha256": "bb36fed9c9fdda3dc694ba177a1d64fb87367823b72419cb5284e4544a7b6892"
+    },
+    {
+      "package": "bepinex",
+      "member": "BepInExPack/BepInEx/core/BepInEx.Harmony.dll",
+      "path": "BepInEx/core/BepInEx.Harmony.dll",
+      "bytes": 5632,
+      "sha256": "d0739c4a13f369094cb164c205ee4cca5392bdd7241b9f242ee13f0d4c0b1856"
+    },
+    {
+      "package": "bepinex",
+      "member": "BepInExPack/BepInEx/core/BepInEx.Harmony.xml",
+      "path": "BepInEx/core/BepInEx.Harmony.xml",
+      "bytes": 4056,
+      "sha256": "a04fedf08f7c81f5d01aba6f2840a7ffce50b79bbd24587d8dbe69ab73971d29"
+    },
+    {
+      "package": "bepinex",
+      "member": "BepInExPack/BepInEx/core/BepInEx.Preloader.dll",
+      "path": "BepInEx/core/BepInEx.Preloader.dll",
+      "bytes": 45056,
+      "sha256": "9029b75171a7f5ecb82c2b95ba735b6117775f883fc9a9f9019d03459327cf38"
+    },
+    {
+      "package": "bepinex",
+      "member": "BepInExPack/BepInEx/core/BepInEx.Preloader.xml",
+      "path": "BepInEx/core/BepInEx.Preloader.xml",
+      "bytes": 7966,
+      "sha256": "6f09224c2b1a7bf6540d355078eeca59862243dadd3a384f6e72e28e8d6fced3"
+    },
+    {
+      "package": "bepinex",
+      "member": "BepInExPack/BepInEx/core/BepInEx.dll",
+      "path": "BepInEx/core/BepInEx.dll",
+      "bytes": 129024,
+      "sha256": "f80b17075e08e49634994aa71a02fa79bc1934f8c46d97d0e4b924dce352c5bc"
+    },
+    {
+      "package": "bepinex",
+      "member": "BepInExPack/BepInEx/core/BepInEx.xml",
+      "path": "BepInEx/core/BepInEx.xml",
+      "bytes": 89792,
+      "sha256": "d90195630dc8c89669071f85ed990bd6eae792f46da35f7e20e4fdbc84850260"
+    },
+    {
+      "package": "bepinex",
+      "member": "BepInExPack/BepInEx/core/HarmonyXInterop.dll",
+      "path": "BepInEx/core/HarmonyXInterop.dll",
+      "bytes": 23552,
+      "sha256": "6ca1acd04774df005e11ffa348898db3242c640844507d78e839b3c6d8099065"
+    },
+    {
+      "package": "bepinex",
+      "member": "BepInExPack/BepInEx/core/Mono.Cecil.Mdb.dll",
+      "path": "BepInEx/core/Mono.Cecil.Mdb.dll",
+      "bytes": 43008,
+      "sha256": "5896d1898f616701fff18f3b2c71e6b844d2390ef9f41e1c5fccce8cb27c698e"
+    },
+    {
+      "package": "bepinex",
+      "member": "BepInExPack/BepInEx/core/Mono.Cecil.Pdb.dll",
+      "path": "BepInEx/core/Mono.Cecil.Pdb.dll",
+      "bytes": 86528,
+      "sha256": "174db44a067f58561510af746f3caeb032037762c57a31c8d9ee32db25174984"
+    },
+    {
+      "package": "bepinex",
+      "member": "BepInExPack/BepInEx/core/Mono.Cecil.Rocks.dll",
+      "path": "BepInEx/core/Mono.Cecil.Rocks.dll",
+      "bytes": 27648,
+      "sha256": "54ac539fb5ddc8b44c0e9acd0fcb7324f89d1a072edf8ebc1b06dd691e3d3927"
+    },
+    {
+      "package": "bepinex",
+      "member": "BepInExPack/BepInEx/core/Mono.Cecil.dll",
+      "path": "BepInEx/core/Mono.Cecil.dll",
+      "bytes": 338944,
+      "sha256": "7baed2c9fa0c0bd96155e06f7700d9b36d76efcdb583babec04f96c47000e340"
+    },
+    {
+      "package": "bepinex",
+      "member": "BepInExPack/BepInEx/core/MonoMod.RuntimeDetour.dll",
+      "path": "BepInEx/core/MonoMod.RuntimeDetour.dll",
+      "bytes": 107008,
+      "sha256": "ae755a3802cf19e755dc622775c15872c950b9d045be9cea926392b08559ec6e"
+    },
+    {
+      "package": "bepinex",
+      "member": "BepInExPack/BepInEx/core/MonoMod.RuntimeDetour.xml",
+      "path": "BepInEx/core/MonoMod.RuntimeDetour.xml",
+      "bytes": 9414,
+      "sha256": "54887808960d156550b37d602d08847607aa9e908d039f2765fb0b5e79394aa4"
+    },
+    {
+      "package": "bepinex",
+      "member": "BepInExPack/BepInEx/core/MonoMod.Utils.dll",
+      "path": "BepInEx/core/MonoMod.Utils.dll",
+      "bytes": 187904,
+      "sha256": "9d1495f147ac93c4f81f84538c1a326e8f8a6aefc78d6289d798f3ce1162c5e9"
+    },
+    {
+      "package": "bepinex",
+      "member": "BepInExPack/BepInEx/core/MonoMod.Utils.xml",
+      "path": "BepInEx/core/MonoMod.Utils.xml",
+      "bytes": 78973,
+      "sha256": "0577b362023a3432d6e8d7934c5eddc3e08fdbb19e191af083e341562c5ede38"
+    },
+    {
+      "package": "bepinex",
+      "member": "BepInExPack/doorstop_config.ini",
+      "path": "doorstop_config.ini",
+      "bytes": 1567,
+      "sha256": "8e46785735ec3e8b3b9ab7bd7f582efd34c08a6d9f2738516ecfd3ea55a5363a"
+    },
+    {
+      "package": "bepinex",
+      "member": "BepInExPack/winhttp.dll",
+      "path": "winhttp.dll",
+      "bytes": 24576,
+      "sha256": "7e90398dd7154b41f76e0524aedb795a7bcbe2ed9a14e4ceee214235aa04e442"
+    },
+    {
+      "package": "healthbars",
+      "member": "BepInEx/plugins/MetalSafeBars/MetalSafeBars.dll",
+      "path": "BepInEx/plugins/MetalSafeBars/MetalSafeBars.dll",
+      "bytes": 10240,
+      "sha256": "96f12258e4ed6c620b74048881cdf021d8198fe48a55380ee70e79d0c064a1c6"
+    },
+    {
+      "package": "json",
+      "member": "lib/netstandard2.0/Newtonsoft.Json.dll",
+      "path": "BepInEx/core/Newtonsoft.Json.dll",
+      "bytes": 717736,
+      "sha256": "12246aa5e14245cbd1a0b8794851defd46e6d782c60eb650ba5aa90ef8447eee"
+    }
+  ]
+}

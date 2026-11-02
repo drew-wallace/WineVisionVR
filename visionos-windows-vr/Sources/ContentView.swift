@@ -7,6 +7,7 @@ struct ContentView: View {
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @Bindable var model: LauncherModel
+    @ObservedObject private var steamServices = SteamLibraryModel.shared
     @AppStorage("WVRPerformanceDiagnostics") private var performanceDiagnostics = false
     @AppStorage("WVRFrameSynthesisMode") private var frameSynthesisMode = 4
     @AppStorage("WVRReconstructionValidation") private var reconstructionValidation = false
@@ -186,16 +187,22 @@ struct ContentView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
+                    if let appID = model.selectedSteamAppID, let status = steamServices.serviceStatus[appID] {
+                        Label(status, systemImage: "icloud").font(.footnote).foregroundStyle(.secondary)
+                        if model.hasAcceptedLaunch {
+                            Label(steamServices.onlineStatus, systemImage: "network").font(.footnote).foregroundStyle(.secondary)
+                        }
+                    }
                     if model.manifest != nil {
                         if model.selectedSteamAppID == 2868840 {
                             Toggle(L("Experimental compatibility renderer", "Experimenteller Kompatibilitätsrenderer"),
                                    isOn: $sts2AngleCompatibility)
                                 .disabled(!model.canChangeSelection || (!model.angleCompatibilityAvailable && !sts2AngleCompatibility))
                             Text(model.angleCompatibilityAvailable
-                                 ? L("Applies the next time you start Slay the Spire 2. Gameplay compatibility is still being tested.",
-                                     "Gilt beim nächsten Start von Slay the Spire 2. Die Spielkompatibilität wird noch getestet.")
-                                 : L("Verified compatibility files must be installed before enabling this renderer.",
-                                     "Vor dem Aktivieren müssen geprüfte Kompatibilitätsdateien installiert werden."))
+                                 ? L("Applies the next time you start Slay the Spire 2. Renderer files are restored automatically when needed.",
+                                     "Gilt beim nächsten Start von Slay the Spire 2. Renderer-Dateien werden bei Bedarf automatisch wiederhergestellt.")
+                                 : L("Compatibility renderer files are unavailable. Reinstall WineVision to restore them.",
+                                     "Kompatibilitätsdateien sind nicht verfügbar. Installiere WineVision erneut, um sie wiederherzustellen."))
                                 .font(.footnote).foregroundStyle(.secondary)
                         }
                         Picker(L("Display", "Anzeige"), selection: $model.presentationModeDraft) {
@@ -470,6 +477,17 @@ struct ContentView: View {
                         TextField(L("Launch arguments — JSON array of strings", "Startargumente — JSON-Array aus Zeichenfolgen"), text: $model.launchArgumentsText, axis: .vertical)
                             .lineLimit(2...6)
                             .disabled(!model.canChangeSelection)
+                        if model.presentationModeDraft == .desktop {
+                            Picker(L("Window aspect ratio", "Fensterseitenverhältnis"), selection: $model.desktopAspectRatioDraft) {
+                                ForEach(WindowsDesktopAspectRatio.allCases, id: \.self) { aspect in
+                                    Text(aspect.title).tag(aspect)
+                                }
+                            }
+                            .disabled(!model.canChangeSelection)
+                            Text(L("Automatic follows the game's displayed area, starting at 1920×1080. Overrides are saved with this profile; the picture keeps its proportions.",
+                                   "Automatisch folgt der angezeigten Spielfläche, zunächst mit 1920×1080. Abweichende Einstellungen werden im Profil gespeichert; das Bild behält seine Proportionen."))
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
                         Slider(value: $model.renderScaleDraft, in: 0.5...1, step: 0.05) {
                             Text(L("Spatial render scale", "Räumliche Render-Skalierung"))
                         }.disabled(!model.canChangeSelection || model.presentationModeDraft == .desktop)

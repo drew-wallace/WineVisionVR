@@ -101,3 +101,24 @@ FreeType 2.13.3 is pinned in `sources.lock.json`. The native runtime recipe veri
 The complete unsigned Xcode app build now succeeds with both runtime resource folders included. A source-built x86-64/Rosetta Wine host generated the clean prefix, and its portable archive passed the structure/provenance validator. The FEX ARM64EC translator compiled; its pinned `libc++.dll` and `libunwind.dll` dependencies and LLVM-MinGW license are packaged. ARM64EC checks accept either the raw ARM64EC machine field or validated AMD64 CHPE metadata; LLVM's displayed effective architecture is not necessarily the raw COFF field. Wine's data-only `apisetschema.dll` is outside the graphics receipt's four-DLL architecture check. The ARM64 `winedevice.exe` was built from the pinned source too.
 
 Saved artifact, build receipts, and next signing step: [local build handoff](../docs/windows-vr-local-build.md). Signing remains blocked by the selected Personal Team's unavailable certificate private key. No tests, launches, device installs, or performance measurements were performed.
+
+
+## Pinned Slay the Spire 2 renderer resources
+
+Before generating the app project, stage the verified x64 ANGLE DLLs and complete upstream credits from the pinned Chrome for Testing 134.0.6998.165 Windows archive. The exact source URL and file hashes are recorded in `stage_angle_compatibility.py`. Staging uses Node.js's built-in Brotli decoder to extract the original third-party credits; normal bundle verification needs only Python. Generated binaries and notices are ignored by Git.
+
+```sh
+python3 windows-vr-tools/stage_angle_compatibility.py --archive /absolute/path/to/chrome-win64.zip
+python3 windows-vr-tools/stage_angle_compatibility.py --verify
+```
+
+The full assembler accepts `AVPPLAY_ANGLE_ARCHIVE` to stage these resources, or verifies an already staged folder. `verify_wine_bundle.sh` verifies the DLL hashes, PE architecture, provenance and notices in the resulting signed app. Missing renderer resources fail the build, so an installed app does not depend on a prior diagnostic file transfer or mutable game cache.
+
+For the isolated native audio recovery change, `build_audio_recovery.py` extends
+an otherwise unchanged verified runtime in fresh clone-on-write output folders.
+It accepts `--baseline`, `--resources`, `--output`, and `--output-resources`;
+checks the single allowed source-patch difference, native/guest/graphics hashes,
+rebuilds the standalone audio translation unit, and records both rebuilt and
+reused outputs. It never overwrites the baseline or claims a graphics rebuild.
+Run `python3 windows-vr-tools/test_audio_recovery.py` for the actual recovery
+function's sanitizer tests before packaging it. Physical playback is separate.

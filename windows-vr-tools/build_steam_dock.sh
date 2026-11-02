@@ -15,17 +15,19 @@ cp -R "$DOCK/src" "$WORK/src"
 mkdir -p "$WORK/docs"
 cp "$DOCK/README.md" "$WORK/README.md"
 cp "$DOCK/docs/HANDOFF.md" "$WORK/docs/HANDOFF.md"
-PATCH="$ROOT/windows-vr-tools/patches/madeira-dock/0001-bounded-launch-arguments.patch"
-git -C "$WORK" apply --check "$PATCH"
-git -C "$WORK" apply "$PATCH"
+PATCH_DIR="$ROOT/windows-vr-tools/patches/madeira-dock"
+for patch in "$PATCH_DIR"/*.patch; do
+    git -C "$WORK" apply --check "$patch"
+    git -C "$WORK" apply "$patch"
+done
 "$AVPPLAY_LLVM_MINGW_ROOT/bin/x86_64-w64-mingw32-clang" \
     -std=c11 -O2 -Wall -Wextra -Werror -Wno-cast-function-type \
     -static -Wl,--strip-all -Wl,--no-insert-timestamp \
-    -o "$WORK/dockhost.exe" "$WORK"/src/*.c -ladvapi32
-python3 - "$SOURCE" "$ROOT" "$EXPECTED" "$WORK" "$PATCH" "${AVPPLAY_STEAM_DOCK_OUTPUT:-$ROOT/visionos-windows-vr/Resources/arm64ec-windows}" <<'PY'
+    -o "$WORK/dockhost.exe" "$WORK"/src/*.c -ladvapi32 -luser32
+python3 - "$SOURCE" "$ROOT" "$EXPECTED" "$WORK" "$PATCH_DIR" "${AVPPLAY_STEAM_DOCK_OUTPUT:-$ROOT/visionos-windows-vr/Resources/arm64ec-windows}" <<'PY'
 import hashlib, json, pathlib, shutil, sys
 source, root, revision = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3]
-work, patch, out = map(pathlib.Path, sys.argv[4:7])
+work, patch_dir, out = map(pathlib.Path, sys.argv[4:7])
 out.mkdir(parents=True, exist_ok=True)
 shutil.copy2(work / 'dockhost.exe', out / 'dockhost.exe')
 # The pinned checkout does not contain the generated farm notice. Recreate it
@@ -55,10 +57,10 @@ notices.write_text(''.join(parts), encoding='utf-8')
 (out / 'dock-build.json').write_text(json.dumps({
     'schemaVersion': 1, 'sourceURL': 'https://github.com/willfaust/madeira-dock',
     'revision': revision, 'target': 'x86_64-w64-mingw32', 'testsRun': False,
-    'patchesSha256': {patch.name: hashlib.sha256(patch.read_bytes()).hexdigest()},
+    'patchesSha256': {patch.name: hashlib.sha256(patch.read_bytes()).hexdigest() for patch in sorted(patch_dir.glob('*.patch'))},
     'patchedSourcesSha256': {p.relative_to(work).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
                             for p in sorted((work / 'src').glob('*')) if p.is_file()},
-    'patchScope': 'Bounded optional application arguments on initial and retried Valve LaunchApp calls',
+    'patchScope': 'Bounded launch arguments; exact-client frame servicing, social presence and aggregate game/lobby diagnostics',
     'noticeSourcesSha256': notice_hashes,
     'noticesSha256': hashlib.sha256(notices.read_bytes()).hexdigest(),
     'sha256': hashlib.sha256((out / 'dockhost.exe').read_bytes()).hexdigest()

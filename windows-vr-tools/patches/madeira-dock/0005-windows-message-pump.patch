@@ -1,0 +1,48 @@
+--- a/src/frame.c
++++ b/src/frame.c
+@@ -13,9 +13,16 @@
+ #include <stdlib.h>
+ #include <string.h>
+ static struct dock_frame_pump pump;
++static bool messages_enabled;
++static uint64_t messages, timers;
++static void (*report)(const char *, int32_t);
+ void dock_frame_start(HMODULE module, void *engine, const struct dock_client_layout *layout, const struct sh_observer *o)
+ {
+     memset(&pump, 0, sizeof(pump));
++    messages = timers = 0; report = o->event;
++    const char *message_setting = getenv("MADEIRA_STEAM_MESSAGE_PUMP");
++    messages_enabled = !(message_setting && !strcmp(message_setting, "0"));
++    o->event("session-messages-ready", messages_enabled);
+     const char *setting = getenv("MADEIRA_STEAM_RUN_FRAME");
+     if (setting && !strcmp(setting, "0")) { o->event("session-frame-disabled", 1); return; }
+     /* Private engine ABI, independently verified against the exact January
+@@ -28,9 +35,27 @@
+     pump.frame = (void (*)(void *))(*(void ***)engine)[19];
+     o->event("session-frame-ready", 1);
+ }
+-void dock_frame_tick(void) { (void)dock_frame_poll(&pump); }
++void dock_frame_tick(void)
++{
++    if (messages_enabled) {
++        MSG msg;
++        /* Steam owns hidden windows and timer callbacks in this console host.
++         * SleepEx/APC delivery and Steam_BGetCallback do not dispatch WM_TIMER.
++         * Bound each batch so messages cannot starve auth/launch deadlines. */
++        for (unsigned i = 0; i < 64 && PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE); ++i) {
++            if (msg.message == WM_QUIT) { report("session-messages-quit", 1); break; }
++            ++messages; if (msg.message == WM_TIMER) ++timers;
++            TranslateMessage(&msg);
++            DispatchMessageW(&msg);
++        }
++    }
++    (void)dock_frame_poll(&pump);
++}
+ void dock_frame_stop(void (*event)(const char *, int32_t))
+ {
++    event("session-messages-dispatched", messages <= INT32_MAX ? (int32_t)messages : INT32_MAX);
++    event("session-message-timers", timers <= INT32_MAX ? (int32_t)timers : INT32_MAX);
++    messages_enabled = false; report = NULL;
+     if (pump.engine) event("session-frame-ticks", pump.ticks <= INT32_MAX ? (int32_t)pump.ticks : INT32_MAX);
+     memset(&pump, 0, sizeof(pump));
+ }

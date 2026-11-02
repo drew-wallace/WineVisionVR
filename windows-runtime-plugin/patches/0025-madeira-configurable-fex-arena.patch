@@ -1,0 +1,56 @@
+--- a/build/ntdll-unix/virtual_ios.c
++++ b/build/ntdll-unix/virtual_ios.c
+@@ -15926,10 +15926,12 @@
+                  (unsigned long long)(lived_ns / 1000000), ios_swap_nchurny );
+     }
+ }
++static int ios_swap_is_fexjit( uintptr_t b, size_t size );
+ static int ios_swap_eligible( const void *base, size_t size, unsigned int vprot, struct file_view *view )
+ {
+     uintptr_t b = (uintptr_t)base;
+     if (ios_swap_fd < 0) return 0;
++    if (ios_swap_is_fexjit( b, size )) return 0;
+     if (!(vprot & VPROT_WRITE) || (vprot & (VPROT_EXEC | VPROT_WRITECOPY | VPROT_GUARD | VPROT_WRITEWATCH))) return 0;
+     if (!view || !is_view_valloc( view ) || (view->protect & (SEC_FILE | SEC_IMAGE | SEC_RESERVE | VPROT_SYSTEM))) return 0;
+     if (b < 0x7000000000ULL || b >= 0x7c00000000ULL) return 0;   /* the guest band only */
+@@ -22995,6 +22997,10 @@
+      * giving up -- the failure mode that matters is reserving NOTHING.
+      * The VM's ceiling is 63GiB, so nothing above that can ever succeed. */
+     static const struct { ULONG_PTR lo, hi; SIZE_T size; const char *what; } plan[] = {
++        /* Opt-in only: headless Steam titles can need more than the default
++         * 16 GiB. Reserve real PROT_NONE space before publishing it to FEX;
++         * failure falls through to the existing capacity/placement ladder. */
++        { 0x7800000000ull, 0x7fffffffffull, 0x800000000ull, "requested high band 32GB" },
+         { 0x7c00000000ull, 0x7fffffffffull, 0x400000000ull, "hardware high band 16GB"  },
+         { 0x0800000000ull, 0x0fffffffffull, 0x200000000ull, "constrained 8GB"          },
+         { 0x0400000000ull, 0x07ffffffffull, 0x200000000ull, "8GB @16-32G"              },
+@@ -23005,6 +23011,8 @@
+         { 0x0200000000ull, 0x03ffffffffull, 0x100000000ull, "4GB @8-16G"               },
+         { 0x0200000000ull, 0x0fbfffffffull, 0x080000000ull, "2GB anywhere low"         },
+     };
++    const char *requested_gib = getenv( "WVR_FEX_ARENA_GIB" );
++    unsigned first_candidate = requested_gib && !strcmp( requested_gib, "32" ) ? 0 : 1;
+     unsigned i;
+     unsigned long long arena_task_max = 0;
+     unsigned long long arena_size_cap = 0;   /* ml995 */
+@@ -23149,7 +23157,10 @@
+         }
+     }
+ 
+-    for (i = 0; i < ARRAY_SIZE(plan); i++)
++    if (requested_gib)
++        dprintf( 2, "[fex-arena] WVR_FEX_ARENA_GIB=%s: %s\n", requested_gib,
++                 first_candidate ? "using default reservation ladder" : "trying real 32 GiB reservation first" );
++    for (i = first_candidate; i < ARRAY_SIZE(plan); i++)
+     {
+         if (arena_size_cap && (unsigned long long)plan[i].size > arena_size_cap)
+         {
+@@ -23954,6 +23965,8 @@
+     unsigned int i;
+     int ok = 0;
+     if (ios_fd_bypass || !ios_fd_ms()) return 0;
++    if (ios_fex_arena_base_unix && (uintptr_t)base >= ios_fex_arena_base_unix &&
++        (uintptr_t)base < ios_fex_arena_end_unix) return 0;
+     if ((uintptr_t)base < 0x7000000000ULL || (uintptr_t)base >= 0x7c00000000ULL) return 0;
+     pthread_mutex_lock( &ios_fd_lock );
+     for (i = 0; i < ios_fd_n; i++) if (ios_fd_ring[i].base == base) break;

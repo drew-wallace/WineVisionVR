@@ -1,0 +1,136 @@
+--- a/src/frame.h
++++ b/src/frame.h
+@@ -11,6 +11,8 @@
+ #include "session.h"
+ void dock_frame_start(HMODULE module, void *engine, const struct dock_client_layout *layout, const struct sh_observer *observer);
+ void dock_frame_tick(void);
++void dock_public_start(HMODULE module, int32_t backend_user, const struct sh_api *api, const struct dock_client_layout *layout, const struct sh_observer *observer);
++bool dock_public_game(uint64_t id, void *info);
+ void dock_frame_stop(void (*event)(const char *, int32_t));
+ #endif
+ #endif
+--- a/src/frame.c
++++ b/src/frame.c
+@@ -13,6 +13,44 @@
+ #include <stdlib.h>
+ #include <string.h>
+ static struct dock_frame_pump pump;
++static void *public_friends;
++static int32_t public_pipe, public_user;
++static const struct sh_api *public_api;
++static uint64_t public_callbacks;
++void dock_public_start(HMODULE module, int32_t backend_user, const struct sh_api *api,
++                       const struct dock_client_layout *layout, const struct sh_observer *o)
++{
++    const char *setting = getenv("MADEIRA_STEAM_PUBLIC_CLIENT");
++    if (!setting || strcmp(setting, "1")) return;
++    if (!layout || strcmp(layout->sha256, "71b391fe9f3e2006cbc81a5c75eef3eb4186012deabfdb2c8b7e8d4850ecf640")) return;
++    void *(*factory)(const char *, int *) = (void *(*)(const char *, int *))GetProcAddress(module, "CreateInterface");
++    int error = -1;
++    void *client = factory ? factory("SteamClient021", &error) : NULL;
++    if (!dock_method_is((uintptr_t)module, client, 0, 0x4e5d30) ||
++        !dock_method_is((uintptr_t)module, client, 2, 0x6f20a0) ||
++        !dock_method_is((uintptr_t)module, client, 5, 0x6f2140) ||
++        !dock_method_is((uintptr_t)module, client, 8, 0x6f21f0)) {
++        o->event("session-public-client-ready", 0); return;
++    }
++    void **v = *(void ***)client;
++    public_api = api;
++    public_pipe = ((int32_t (*)(void *))v[0])(client);
++    if (public_pipe <= 0) { o->event("session-public-client-ready", 0); return; }
++    public_user = ((int32_t (*)(void *, int32_t))v[2])(client, public_pipe);
++    o->event("session-public-global-user-matched", public_user == backend_user);
++    if (public_user != backend_user) return;
++    typedef void *(*get_interface)(void *, int32_t, int32_t, const char *);
++    void *user = ((get_interface)v[5])(client, public_user, public_pipe, "SteamUser023");
++    public_friends = ((get_interface)v[8])(client, public_user, public_pipe, "SteamFriends017");
++    if (!dock_method_is((uintptr_t)module, public_friends, 8, 0x6f5820)) public_friends = NULL;
++    o->event("session-public-user-ready", user != NULL);
++    o->event("session-public-friends-ready", public_friends != NULL);
++}
++bool dock_public_game(uint64_t id, void *info)
++{
++    return public_friends && ((bool (*)(void *, uint64_t, void *))(*(void ***)public_friends)[8])(public_friends, id, info);
++}
++
+ static bool messages_enabled;
+ static uint64_t messages, timers;
+ static void (*report)(const char *, int32_t);
+@@ -50,11 +88,25 @@
+         }
+     }
+     (void)dock_frame_poll(&pump);
++    if (public_pipe > 0 && public_api) {
++        for (unsigned batch = 0; batch < 64; ++batch) {
++            struct sh_callback callback = {0};
++            if (!public_api->get_callback(public_pipe, &callback)) break;
++            ++public_callbacks;
++            public_api->free_callback(public_pipe);
++        }
++    }
+ }
+ void dock_frame_stop(void (*event)(const char *, int32_t))
+ {
+     event("session-messages-dispatched", messages <= INT32_MAX ? (int32_t)messages : INT32_MAX);
+     event("session-message-timers", timers <= INT32_MAX ? (int32_t)timers : INT32_MAX);
++    if (public_api) {
++        event("session-public-callbacks", public_callbacks <= INT32_MAX ? (int32_t)public_callbacks : INT32_MAX);
++        if (public_pipe > 0 && public_user > 0) public_api->release_user(public_pipe, public_user);
++        if (public_pipe > 0) event("session-public-pipe-released", public_api->release_pipe(public_pipe));
++    }
++    public_api = NULL; public_friends = NULL; public_pipe = public_user = 0; public_callbacks = 0;
+     messages_enabled = false; report = NULL;
+     if (pump.engine) event("session-frame-ticks", pump.ticks <= INT32_MAX ? (int32_t)pump.ticks : INT32_MAX);
+     memset(&pump, 0, sizeof(pump));
+--- a/src/session.c
++++ b/src/session.c
+@@ -136,6 +136,7 @@
+     dock_frame_start(module, engine, layout, o);
+     user = api->create_global_user(&pipe);
+     if (user <= 0 || pipe <= 0) goto done;
++    dock_public_start(module, user, api, layout, o);
+     void *client_user = ((get_user_fn)(*(void ***)engine)[8])(engine, user, pipe);
+     if (!client_user) goto done;
+     o->event("session-user-vtable-rva", (int32_t)((uintptr_t)*(void **)client_user - (uintptr_t)module));
+--- a/src/presence.c
++++ b/src/presence.c
+@@ -2,6 +2,7 @@
+  * Copyright 2026 WineVision VR contributors
+  * Madeira Converter Exception: see LICENSE-EXCEPTION.md */
+ #include "presence.h"
++#include "frame.h"
+ 
+ /* The desktop UI normally publishes presence. A headless client must wake its
+  * friends session explicitly. Keep deliberate Busy/Invisible/etc. settings;
+@@ -48,6 +49,7 @@
+ static bool reconnect_pending;
+ static const char *(*friend_name)(void *, uint64_t);
+ static const char *target_name, *target_alternate;
++static int last_public_games = -1;
+ static int last_names = -1, last_target = -1, last_target_online = -1, last_target_game = -1, last_target_lobby = -1;
+ static uint64_t requested[256];
+ static unsigned requested_count;
+@@ -170,11 +172,14 @@
+     int count = social.friend_count(social.friends, 4);
+     if (count < 0 || count > 256) { event("session-social-game-snapshot-bounded", 0); return; }
+     int playing = 0, matching = 0, lobbies = 0, ids = 0, online = 0, asked = 0, queued = 0;
++    int public_games = 0;
+     int names = 0, target = 0, target_online = 0, target_game = 0, target_lobby = 0;
+     for (int i = 0; i < count; ++i) {
+         uint64_t id = 0; struct game_info info = {0};
+         if (friend_at(social.friends, &id, i, 4) != &id || !id) continue;
+         ++ids;
++        struct game_info public_info = {0};
++        if (dock_public_game(id, &public_info) && public_info.game) ++public_games;
+         bool selected_friend = false;
+         const char *name = friend_name ? friend_name(social.friends, id) : NULL;
+         if (name && strnlen(name, 128) > 0 && strnlen(name, 128) < 128) {
+@@ -201,6 +206,8 @@
+     }
+     struct game_info own = {0};
+     int own_match = friend_game(social.friends, self_id, &own) && own.game == selected_app;
++    if (public_games != last_public_games) event("session-public-friends-playing", public_games);
++    last_public_games = public_games;
+     if (names != last_names) event("session-social-friend-names-readable", names);
+     last_names = names;
+     if (target_name || target_alternate) {

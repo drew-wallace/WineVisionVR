@@ -10,6 +10,8 @@ The app can persist games and named per-game launch profiles in its sandbox Appl
 
 Profiles are stored separately from the manifest and from the runtime plugin request. The manifest schema and required V1 plugin fields remain compatible; the optional gameID field selects a per-game Wine prefix. A profile can be selected, saved, saved as a new profile, and removed; its launch arguments are edited as a JSON array of strings, preserving empty and newline-containing argv entries. Profiles also save the ordinary-Metal spatial render scale (50–100%, default 100%); this is bilinear per-eye scaling, not temporal SR or DLSS. Backend and graphics are retained from the manifest/profile rather than exposed as unimplemented graphics controls. D3D12 manifests and transfers are retained as an experimental DXMT request, with launch gated on the matching package advertised by the signed plugin. Vulkan is explicitly blocked without fallback. See [the D3D12 integration contract](../docs/windows-vr-d3d12.md).
 
+Desktop profiles also save a window aspect ratio. **Automatic** starts with a 1920×1080 virtual monitor and follows the largest visible Direct3D client's rendered dimensions once stable, including later resolution changes. A guest display-mode change is used when no rendered client is available. **Whole desktop** retains all desktop windows; fixed 4:3, 16:9, 16:10 and 21:9 overrides preserve the picture with letterboxing when needed. Explicit process monitor dimensions take precedence; VR is unaffected. Existing profiles default to Automatic. Steam entries use their app IDs so display profiles stay with their games. The compositor and pointer mapping share the same presentation frame; no pixel-based black-bar detection or automatic image cropping is applied.
+
 The native plugin consumes one session per app process. Imports, library selection, and profile changes are disabled during launch/session activity and after the session slot is consumed. A stop request can return pending while cooperative OpenXR exit is processed. The UI stays active and retains folder permission until Wine actually exits. Unresponsive guests still require app restart; no force-termination or in-process relaunch is claimed.
 
 ## Compatibility report and counters
@@ -69,6 +71,15 @@ scoped to that title and respects explicit host HID settings. The standalone
 Windows probe at `windows-vr-native/Tests/Compatibility/GamepadProbe.c` checks
 all five XInput variants, DirectInput enumeration and WinRT Gamepad readings.
 
+Risk of Rain 2's health-bar repair is prepared automatically after a Steam
+install/update and before launching the selected Steam game. WineVision downloads
+the pinned BepInEx, MetalSafeBars and Newtonsoft.Json packages, verifies every
+deployed file, and keeps a verified cache outside the game folder. A reinstall
+can restore missing files offline from this cache. Matching existing repairs are
+adopted; different mod files are preserved and reported as conflicts. The one
+required loader setting is updated with a backup while other settings remain
+intact. See `../docs/windows-vr-risk-of-rain2.md` for the verified recipe.
+
 - Source adapters, source overlays and build recipes are included. Native archives must be built for visionOS; guest DLLs and Madeira Dock require the pinned Windows cross-toolchain. Generated binaries are not checked in. D3D11 is the initial Steam launch profile; D3D12 has a separately gated experimental package. Vulkan is unavailable.
 - JIT preparation requests the app's Madeira debugger script through the configured StikDebug/StikJIT URL scheme. That helper must be installed and paired; debugger attachment alone does not mean FEX JIT memory is prepared or that execution will succeed.
 - The sample manifest is metadata only. Supply a game you are legally entitled to use and select its containing folder in the app.
@@ -77,3 +88,8 @@ all five XInput variants, DirectInput enumeration and WinRT Gamepad readings.
 - `Resources/VisionOSWindowsVR.entitlements` requests `com.apple.developer.kernel.increased-memory-limit` for the in-process Wine/FEX guest, the same entitlement Madeira's "Memory+" badge checks. Extended Virtual Addressing is not requested: personal development teams cannot provision it and Madeira runs without it (its address map is 63 GB instead of 512 GB). A development-signed build is still required for debugger-based JIT. No local-network permission is declared. Add a local-network usage description only if a real feature later needs local networking, with a concrete rationale.
 
 See `Examples/sample-manifest.json` for the version-1 manifest shape. `WindowsGameManifest.validate()` checks the relative executable path, and the bridge verifies that the resolved executable is a regular file contained by the selected folder before dispatch. The app itself does not load the game executable. See `../windows-vr-tools/README.md` for separate source/resource preparation. Never reuse native iOS archives for visionOS; stage Wine resources under `Resources/Runtime` and combined guest outputs under `Resources/WindowsVR/Guest/x64`. Preserve upstream notices and do not distribute game files or credentials.
+
+
+## Slay the Spire 2 renderer files
+
+The signed app includes a pinned `ANGLECompatibility` resource folder containing the x64 renderer DLLs, their provenance, and upstream license notices. Normal launches verify and use these bundled files first; a legacy Documents cache remains a fallback. With the experimental renderer enabled, each launch safely publishes any missing DLLs into the installed game folder, including after Steam re-downloads. Missing or deleted cache files do not disable the bundled renderer, and explicit opt-out remains respected. Existing or modified game DLLs are preserved rather than overwritten. Prepare the generated app resources with `windows-vr-tools/stage_angle_compatibility.py`; the production bundle validator rejects missing, modified or wrongly built renderer resources.

@@ -834,3 +834,70 @@ live allocation-size measurement is claimed. Acceptance covers the menu, first
 combat loading and card play; an entire run and later acts have not been tested.
 The game is left running with capture disabled. The profile and installed build
 retain both fixes for ordinary launches.
+
+## October 30: Tab control and headset-wide static
+
+On build 30, the user reports that selecting **Tab** in the desktop Controls
+menu makes audio across the Vision Pro sound static until the game window is
+closed. The user clarifies that opening Controls alone does not trigger it.
+The launcher log identifies this run as the experimental ANGLE/D3D11 trial.
+
+Retrieved evidence is preserved in `.build-device/tab-audio-diagnosis/`, with
+file hashes in `evidence.json`. The native log confirms one Tab down/up pair,
+both delivered successfully with scan code `0x0f`. Immediately afterward it
+records five code-buffer `mprotect` warnings and a 53.9-second process-wide
+gap, approximately 15:22:59.7–15:23:53.6 device-local time. The later Alt-F4
+sequence matches the close request. These establish ordering, not the cause
+of the static or the pause.
+
+The recorded pre-Tab pacing intervals show no output shortages or clamping,
+and low source peaks. During the gap, only 155 render passes occur over the
+55.20-second reporting interval. Zero reported shortages therefore does not
+establish continuous output: a suspended callback cannot count missing passes.
+The installed build does not log audio route or interruption notifications.
+
+Source now adds read-only audio-session diagnostics for route changes,
+activation/deactivation, resumption recommendations and media-service loss or
+reset, plus snapshots before and after menu key controls and on desktop scene
+changes. Snapshots include monotonic uptime, category/options, sample rate,
+I/O duration, output latency and port types/channel counts, without device
+names. The visionOS 27 notification APIs are used. No audio-session reset,
+buffer-size change, or workaround for Tab is established by this evidence;
+the issue remains unresolved pending a correlated device retry.
+
+The diagnostics pass Swift 6 type checking against the visionOS 27 SDK with
+warnings treated as errors, and the full signed Release build and production
+bundle verification pass (`release-build-verified.log`). This diagnostic
+candidate has not been installed or exercised on the physical headset.
+
+### October 30 hosting retry: audio resumption
+
+Build 42's new audio diagnostics captured audio becoming inactive, followed by
+`resumption-recommendation ... resumption=1`, with no subsequent activation.
+The visionOS 27 SDK defines 1 as `shouldResume`. Build 44 handles that specific
+system recommendation by reactivating AVAudioSession only while the Wine game
+runtime is running, preserving its existing mixing category. It logs the actual
+activation result and does not reactivate in response to `shouldNotResume` or
+after the runtime stops. This addresses the missing resumption action; it does
+not establish the cause of the previously observed Tab/static runtime pause.
+Physical sound recovery still requires a headset retry.
+
+### Build 47: recover native audio without ending the game
+
+The latest affected session again recorded a 44.6-second process-wide gap. Its
+recorded source/mixer samples had no clipping or underruns; that does not prove
+the device mix stayed healthy during the gap. The user reports headset-wide
+distortion beginning without input and persisting after pausing other audio.
+The underlying pause/distortion trigger remains unconfirmed.
+
+System-recommended audio resumption now also stops, resets and restarts the
+existing RemoteIO output, rather than only reactivating AVAudioSession. Controls
+has a Reset audio action for a controlled recovery test without ending the game
+or its Steam connection. The operation runs off the UI/render threads, retains
+WASAPI clients and ring positions, avoids RemoteIO instance recreation, and
+propagates real Core Audio failures. It starts output only with active clients.
+The baseline runtime stays untouched; the incremental builder clones verified
+outputs, rebuilds only audio_null_ios.o and regenerates native/guest provenance.
+The actual production recovery function is exercised with sanitizer tests for
+ordering, retained clients, stopped output, failure propagation and retry.
+Physical recovery and simultaneous movie playback still require verification.

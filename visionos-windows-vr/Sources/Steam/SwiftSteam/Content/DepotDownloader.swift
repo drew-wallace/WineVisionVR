@@ -114,13 +114,13 @@ final class DepotDownloader {
             guard let gid = depot.publicManifestID else { continue }
             let key: Data
             do {
-                key = try await depotKey(depotID: depot.depotID, appID: app.appID)
+                key = try await depotKey(depotID: depot.depotID, appID: depot.dlcAppID ?? app.appID)
             } catch SteamError.depotKeyNotFound(let refused) {
                 // A depot Steam refuses AND the account's licenses do not
                 // include is content this account does not own (another
                 // edition, extra content): it is left out. Any other refusal
                 // still fails.
-                if let owned = await ownedDepots(), !owned.isEmpty, !owned.contains(refused) {
+                if depot.dlcAppID == nil, let owned = await ownedDepots(), !owned.isEmpty, !owned.contains(refused) {
                     licenseSkipped.append(refused)
                     continue
                 }
@@ -209,13 +209,14 @@ final class DepotDownloader {
         report(state)
         let installed = plans.map { plan in
             AppManifestWriter.InstalledDepot(depotID: Int(plan.depotID), manifestGID: plan.manifestGID,
-                                             size: Int64(plan.manifest.totalUncompressedSize))
+                                             size: Int64(plan.manifest.totalUncompressedSize),
+                                             dlcAppID: depots.first(where: { $0.depotID == plan.depotID })?.dlcAppID.map(Int.init))
         }
         // Depots taken from another app are that app's content. Valve's client
         // refuses a launch until the owner app has its own record, so both
         // records are written the way the client writes them.
         var owners: [UInt32: UInt32] = [:]
-        for depot in depots { if let from = depot.fromApp, from != app.appID { owners[depot.depotID] = from } }
+        for depot in depots { if let from = depot.fromApp, from != app.appID, depot.dlcAppID == nil { owners[depot.depotID] = from } }
         let own = installed.filter { owners[UInt32($0.depotID)] == nil }
         let shared = installed.filter { owners[UInt32($0.depotID)] != nil }
         // Files Valve's client must customize per user before they run, as

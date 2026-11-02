@@ -1,0 +1,144 @@
+--- /dev/null
++++ b/src/sdk_probe.h
+@@ -0,0 +1,9 @@
++/* SPDX-License-Identifier: GPL-3.0-or-later
++ * Copyright 2026 WineVision VR contributors
++ * Madeira Converter Exception: see LICENSE-EXCEPTION.md */
++#ifndef WVR_STEAM_SDK_PROBE_H
++#define WVR_STEAM_SDK_PROBE_H
++#include "session.h"
++int dock_sdk_probe(const wchar_t *install, uint32_t app, int32_t pipe,
++                   const struct sh_api *api, const struct sh_observer *observer);
++#endif
+--- /dev/null
++++ b/src/sdk_probe.c
+@@ -0,0 +1,96 @@
++/* SPDX-License-Identifier: GPL-3.0-or-later
++ * Copyright 2026 WineVision VR contributors
++ * Madeira Converter Exception: see LICENSE-EXCEPTION.md */
++#include "sdk_probe.h"
++#include "frame.h"
++#include <string.h>
++#include <stdio.h>
++#include <wchar.h>
++struct sdk_game_info { uint64_t game; uint32_t ip; uint16_t port, query; uint64_t lobby; };
++_Static_assert(sizeof(struct sdk_game_info) == 24, "Steamworks FriendGameInfo_t ABI");
++int dock_sdk_probe(const wchar_t *install, uint32_t app, int32_t pipe,
++                   const struct sh_api *api, const struct sh_observer *o)
++{
++    /* Diagnostic for the installed, licensed game's original SDK. Nothing is
++     * copied into or changed inside the game. No RemoteStorage or LaunchApp
++     * function is looked up or called. An unsupported export fails closed. */
++    wchar_t path[32768], relative[512];
++    DWORD n = GetEnvironmentVariableW(L"MADEIRA_STEAM_SDK_RELATIVE_PATH", relative, 512);
++    if (!n || n >= 512 || relative[0] == L'\\' || relative[0] == L'/' ||
++        wcschr(relative, L':') || wcsstr(relative, L"..") || wcslen(install) + n + 2 >= 32768) return 60;
++    swprintf(path, 32768, L"%ls\\%ls", install, relative);
++    HMODULE sdk = LoadLibraryExW(path, NULL, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
++    o->event("sdk-probe-library-ready", sdk != NULL);
++    if (!sdk) return 60;
++    int32_t (*initialize)(char *) = (void *)GetProcAddress(sdk, "SteamAPI_InitFlat");
++    void (*shutdown)(void) = (void *)GetProcAddress(sdk, "SteamAPI_Shutdown");
++    void (*callbacks)(void) = (void *)GetProcAddress(sdk, "SteamAPI_RunCallbacks");
++    void *(*get_friends)(void) = (void *)GetProcAddress(sdk, "SteamAPI_SteamFriends_v017");
++    void *(*get_user)(void) = (void *)GetProcAddress(sdk, "SteamAPI_SteamUser_v023");
++    void *(*get_utils)(void) = (void *)GetProcAddress(sdk, "SteamAPI_SteamUtils_v010");
++    bool (*logged_on)(void *) = (void *)GetProcAddress(sdk, "SteamAPI_ISteamUser_BLoggedOn");
++    uint32_t (*get_app)(void *) = (void *)GetProcAddress(sdk, "SteamAPI_ISteamUtils_GetAppID");
++    int32_t (*count)(void *, int32_t) = (void *)GetProcAddress(sdk, "SteamAPI_ISteamFriends_GetFriendCount");
++    uint64_t (*by_index)(void *, int32_t, int32_t) = (void *)GetProcAddress(sdk, "SteamAPI_ISteamFriends_GetFriendByIndex");
++    int32_t (*state)(void *, uint64_t) = (void *)GetProcAddress(sdk, "SteamAPI_ISteamFriends_GetFriendPersonaState");
++    const char *(*name)(void *, uint64_t) = (void *)GetProcAddress(sdk, "SteamAPI_ISteamFriends_GetFriendPersonaName");
++    bool (*game)(void *, uint64_t, struct sdk_game_info *) = (void *)GetProcAddress(sdk, "SteamAPI_ISteamFriends_GetFriendGamePlayed");
++    if (!initialize || !shutdown || !callbacks || !get_friends || !get_user || !get_utils ||
++        !logged_on || !get_app || !count || !by_index || !state || !name || !game) return 60;
++    char app_text[16], error[1024] = {0};
++    snprintf(app_text, sizeof(app_text), "%u", app);
++    SetEnvironmentVariableA("SteamAppId", app_text);
++    SetEnvironmentVariableA("SteamGameId", app_text);
++    int32_t result = initialize(error);
++    memset(error, 0, sizeof(error)); /* Never log a potentially private SDK error string. */
++    o->event("sdk-probe-init-result", result);
++    if (result) return 61;
++    void *friends = get_friends(), *user = get_user(), *utils = get_utils();
++    bool ready = friends && user && utils;
++    o->event("sdk-probe-interfaces-ready", ready);
++    if (!ready) { shutdown(); return 62; }
++    o->event("sdk-probe-app-matched", get_app(utils) == app);
++    o->event("sdk-probe-user-online", logged_on(user));
++    if (get_app(utils) != app || !logged_on(user)) { shutdown(); return 62; }
++    char target[128] = {0}, alternate[128] = {0};
++    GetEnvironmentVariableA("MADEIRA_STEAM_TARGET_FRIEND", target, sizeof(target));
++    GetEnvironmentVariableA("MADEIRA_STEAM_TARGET_FRIEND_ALT", alternate, sizeof(alternate));
++    uint64_t begin = o->now_ms(), next = 0;
++    int prev[6] = {-1,-1,-1,-1,-1,-1};
++    while (o->now_ms() - begin < 25000) {
++        dock_frame_tick();
++        callbacks();
++        for (unsigned batch = 0; batch < 64; ++batch) {
++            struct sh_callback callback = {0};
++            if (!api->get_callback(pipe, &callback)) break;
++            api->free_callback(pipe);
++        }
++        uint64_t now = o->now_ms();
++        if (now >= next) {
++            next = now + 2000;
++            int values[6] = {count(friends, 4), 0, 0, 0, 0, 0};
++            if (values[0] < 0 || values[0] > 256) { shutdown(); return 63; }
++            for (int i = 0; i < values[0]; ++i) {
++                uint64_t id = by_index(friends, i, 4);
++                if (!id) continue;
++                int32_t persona = state(friends, id);
++                if (persona > 0) ++values[1];
++                struct sdk_game_info info = {0};
++                bool playing = game(friends, id, &info) && info.game;
++                if (playing) ++values[2];
++                const char *display = name(friends, id);
++                if (display && strnlen(display,128) < 128 &&
++                    ((target[0] && !_stricmp(display,target)) || (alternate[0] && !_stricmp(display,alternate)))) {
++                    ++values[3];
++                    if (playing && info.game == app) { ++values[4]; if (info.lobby) ++values[5]; }
++                }
++            }
++            const char *keys[6] = {"sdk-probe-friend-count","sdk-probe-friends-online","sdk-probe-friends-playing", "sdk-probe-target-found","sdk-probe-target-game","sdk-probe-target-lobby"};
++            for (int i = 0; i < 6; ++i) if (values[i] != prev[i]) { o->event(keys[i],values[i]); prev[i]=values[i]; }
++        }
++        o->sleep_ms(20);
++    }
++    shutdown();
++    o->event("sdk-probe-shutdown", 1);
++    return 0;
++}
+--- a/src/launch.c
++++ b/src/launch.c
+@@ -9,6 +9,7 @@
+ #include "validation.h"
+ #include "presence.h"
+ #include "frame.h"
++#include "sdk_probe.h"
+ #include <stdio.h>
+ #include <string.h>
+ #include <wchar.h>
+@@ -230,7 +231,8 @@
+      * the manifest's CheckGuid block. Failure never launches the game.
+      * MADEIRA_DOCK_CEG=0 restores the previous direct LaunchApp.
+      */
+-    if (wide_flag(L"MADEIRA_STEAM_HOST_CEG", L'1')) {
++    bool sdk_probe = wide_flag(L"MADEIRA_STEAM_SDK_PROBE", L'1');
++    if (!sdk_probe && wide_flag(L"MADEIRA_STEAM_HOST_CEG", L'1')) {
+         if (wide_flag(L"MADEIRA_DOCK_CEG", L'0')) o->event("ceg-disabled", 1);
+         else {
+             /* ml2000: Valve's client reaches its own client service through
+@@ -259,6 +261,12 @@
+     if (!publish(&values[0], GetCurrentProcessId()) ||
+         !publish(&values[1], (DWORD)steamid) || !publish(&values[2], GetCurrentProcessId())) goto done;
+     o->event("launch-client-discovery-published", 1);
++    if (sdk_probe) {
++        o->event("sdk-probe-mode", 1);
++        result = dock_sdk_probe(expected, appid, pipe, api, o);
++        o->event("sdk-probe-result", result);
++        goto done;
++    }
+     SetConsoleCtrlHandler(on_control, TRUE);
+     uint64_t gameid = appid;
+     uint64_t call = ((launch_fn)(*(void ***)manager)[2])(manager, &gameid, launch_option, 0, launch_args);

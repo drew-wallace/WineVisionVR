@@ -35,6 +35,8 @@ struct SteamAppInfo {
     /// Steam Auto-Cloud configuration (`ufs`): which files of the game are its
     /// saves, and where another platform keeps them. Empty for a game that
     /// only uses the Steam Cloud API (its files live in the user's `remote` folder).
+    var cloudEnabled = false
+    var ownedDLC: Set<UInt32> = []
     var saveFiles: [SaveFile] = []
     var rootOverrides: [RootOverride] = []
 
@@ -154,14 +156,14 @@ struct SteamAppInfo {
 
     /// The depots a Windows install takes: matching OS, architecture-neutral
     /// or matching osarch, common or requested-language content, no
-    /// low-violence alternates, no DLC or shared redistributables, and only
+    /// low-violence alternates, licensed DLC, no shared redistributables, and only
     /// depots that publish a public manifest. A 64-bit selection falls back
     /// to 32-bit depots when the app only publishes those.
     func installDepots(os: String = "windows", arch: String = "64",
                        language: String = "english") -> [DepotInfo] {
         func select(_ arch: String) -> [DepotInfo] {
             depots.filter { d in
-                d.supports(os: os) && d.dlcAppID == nil && !d.isSharedInstall &&
+                d.supports(os: os) && (d.dlcAppID == nil || ownedDLC.contains(d.dlcAppID!)) && !d.isSharedInstall &&
                 d.publicManifestID != nil && !d.lowViolence &&
                 (d.osarch.isEmpty || d.osarch == arch) &&
                 (d.language.isEmpty || d.language.caseInsensitiveCompare(language) == .orderedSame)
@@ -368,9 +370,18 @@ struct SteamAppInfo {
             }
         }
 
+        // DLC names its base app in extended.dlcforappid; common.parent is
+        // also used by demos and is not sufficient to associate DLC.
+        if info.type == .dlc, let extended = appInfo["extended"] as? [String: Any],
+           let parent = (extended["dlcforappid"] as? String).flatMap(UInt32.init),
+           parent != 0, parent != info.appID {
+            info.parentID = parent
+        }
+
         // Auto-Cloud section. Untrusted text: bounded, and only ever used to
         // form paths below known folders (SteamCloud validates each one).
         if let ufs = appInfo["ufs"] as? [String: Any] {
+            info.cloudEnabled = (UInt64(ufs["quota"] as? String ?? "0") ?? 0) > 0 || (UInt64(ufs["maxnumfiles"] as? String ?? "0") ?? 0) > 0 || ufs["savefiles"] != nil
             func text(_ value: Any?) -> String {
                 guard let string = value as? String, string.utf8.count <= 512 else { return "" }
                 return string

@@ -293,6 +293,31 @@ enum MadeiraDock {
         "session-native-handoff-app-mismatch", "session-handoff-stage", "session-handoff-error",
         "session-account-input-invalid", "session-app-input-invalid",
         "session-native-token-submitted", "session-logon-start-result", "session-connection-result",
+        "session-social-interface-ready", "session-social-disabled", "session-social-previous-state",
+        "session-social-online-requested", "session-social-persona-state", "session-social-friend-count",
+        "session-social-activity-ready", "session-social-idle-before", "session-social-idle-seconds",
+        "session-frame-ready", "session-frame-disabled", "session-frame-ticks",
+        "session-messages-ready", "session-messages-quit", "session-messages-dispatched", "session-message-timers",
+        "session-social-game-info-ready", "session-social-game-snapshot-bounded",
+        "session-social-friends-playing", "session-social-friends-same-game",
+        "session-social-friend-lobbies", "session-social-self-game-visible",
+        "session-social-info-request-ready", "session-social-info-requests", "session-social-info-queued",
+        "session-social-friend-ids-readable", "session-social-friends-online",
+        "session-social-reconnect-started", "session-social-reconnect-finished",
+        "session-social-friend-names-readable", "session-social-target-found",
+        "session-social-target-online", "session-social-target-game", "session-social-target-lobby",
+        "session-social-primary-before", "session-social-primary-after", "session-social-chat-ready",
+        "session-social-web-ui", "session-social-reconnect-offline-state", "session-social-reconnect-online-state",
+        "client-no-friends-ui-argument",
+        "session-friend-subscription-ready", "session-friend-subscription-sent", "session-friend-subscription-result",
+        "session-friend-subscription-bytes", "session-friend-subscription-timeout", "session-friend-subscription-released",
+        "session-public-client-ready", "session-public-global-user-matched", "session-public-user-ready",
+        "session-public-friends-ready", "session-public-callbacks", "session-public-pipe-released", "session-public-friends-playing",
+        "sdk-probe-library-ready", "sdk-probe-init-result", "sdk-probe-interfaces-ready", "sdk-probe-app-matched",
+        "sdk-probe-user-online", "sdk-probe-friend-count", "sdk-probe-friends-online", "sdk-probe-friends-playing",
+        "sdk-probe-target-found", "sdk-probe-target-game", "sdk-probe-target-lobby", "sdk-probe-shutdown",
+        "sdk-probe-mode", "sdk-probe-result", "sdk-probe-cloud-disabled",
+        "sdk-probe-child-mode", "sdk-probe-child-started", "sdk-probe-child-result",
         "session-authenticated-online", "session-requested-app-entitled", "session-subscription-count",
         "session-requested-app-listed", "session-auth-test-result",
         "session-online-subscription-count", "session-online-app-zero-query", "session-online-callback-id",
@@ -417,6 +442,9 @@ enum MadeiraDock {
     /// The host's environment for one launch.
     /// Internal Steam host settings stay outside imported manifest environments.
     static func extraLaunchArguments(appID: Int) -> String? {
+        // Risk of Rain 2 exhausts FEX's 16 GiB address arena during loading.
+        // Bound Unity's job workers to reduce translated thread/heap pressure.
+        if appID == 632360 { return "-job-worker-count 2" }
         if let trial = WindowsVRAngleTrial.launchArguments(appID: appID, enabled: WindowsVRAngleTrial.enabled) {
             return trial
         }
@@ -434,6 +462,22 @@ enum MadeiraDock {
         setenv("MADEIRA_DOCK_SESSION", "1", 1)
         for key in ["MADEIRA_STEAM_HOST_PROBE", "MADEIRA_STEAM_HOST_SESSION", "MADEIRA_STEAM_HOST_LOGIN", "MADEIRA_STEAM_HOST_LAUNCH"] {
             setenv(key, "1", 1)
+        }
+        if LaunchDiagnostics.automatedLaunchEnabled,
+           ProcessInfo.processInfo.environment["WVR_STEAM_SOCIAL_PROBE"] == "1" {
+            // Login-only device check: query presence/friends without starting
+            // the game or invoking its save/multiplayer operations.
+            setenv("MADEIRA_STEAM_HOST_LAUNCH", "0", 1)
+            setenv("MADEIRA_STEAM_SOCIAL_PROBE", "1", 1)
+            if ProcessInfo.processInfo.environment["WVR_STEAM_SDK_PROBE"] == "1" {
+                setenv("MADEIRA_STEAM_SDK_PROBE", "1", 1)
+                setenv("MADEIRA_STEAM_HOST_LAUNCH", "1", 1)
+            } else {
+                unsetenv("MADEIRA_STEAM_SDK_PROBE")
+            }
+        } else {
+            unsetenv("MADEIRA_STEAM_SDK_PROBE")
+            unsetenv("MADEIRA_STEAM_SOCIAL_PROBE")
         }
         setenv("MADEIRA_STEAM_HOST_APPID", String(game.id), 1)
         setenv("MADEIRA_STEAM_HOST_LAUNCH_OPTION", String(launchOption), 1)

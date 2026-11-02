@@ -1,0 +1,99 @@
+--- a/src/presence.c
++++ b/src/presence.c
+@@ -44,6 +44,11 @@
+ #include <stddef.h>
+ static struct dock_presence social;
+ static uint64_t self_id, next_snapshot;
++static uint64_t reconnect_until;
++static bool reconnect_pending;
++static const char *(*friend_name)(void *, uint64_t);
++static const char *target_name, *target_alternate;
++static int last_names = -1, last_target = -1, last_target_online = -1, last_target_game = -1, last_target_lobby = -1;
+ static uint64_t requested[256];
+ static unsigned requested_count;
+ static bool (*request_info)(void *, uint64_t, bool);
+@@ -65,6 +70,10 @@
+ {
+     memset(&social, 0, sizeof(social));
+     friend_at = NULL; friend_game = NULL; next_snapshot = 0;
++    reconnect_until = 0; reconnect_pending = false; friend_name = NULL;
++    target_name = getenv("MADEIRA_STEAM_TARGET_FRIEND");
++    target_alternate = getenv("MADEIRA_STEAM_TARGET_FRIEND_ALT");
++    last_names = last_target = last_target_online = last_target_game = last_target_lobby = -1;
+     request_info = NULL; friend_state = NULL; requested_count = 0;
+     last_ids = last_online = -1;
+     self_id = self; selected_app = app;
+@@ -116,6 +125,10 @@
+         request_info = (bool (*)(void *, uint64_t, bool))(*(void ***)friends)[32];
+         friend_state = (int32_t (*)(void *, uint64_t))(*(void ***)friends)[13];
+     }
++    if (dock_method_is((uintptr_t)module, friends, 14, 0x753c20))
++        friend_name = (const char *(*)(void *, uint64_t))(*(void ***)friends)[14];
++    const char *reconnect = getenv("MADEIRA_STEAM_SOCIAL_RECONNECT");
++    reconnect_pending = reconnect && !strcmp(reconnect, "1");
+     o->event("session-social-info-request-ready", request_info && friend_state);
+     o->event("session-social-game-info-ready", friend_at && friend_game);
+     o->event("session-social-activity-ready", social.utils != NULL);
+@@ -124,16 +137,40 @@
+ }
+ void dock_social_tick(uint64_t now, void (*event)(const char *, int32_t))
+ {
++    if (reconnect_pending) {
++        reconnect_pending = false;
++        if (social.state(social.friends) == 1) {
++            social.set_state(social.friends, 0);
++            reconnect_until = now + 1500;
++            event("session-social-reconnect-started", 1);
++        }
++    }
++    if (reconnect_until) {
++        if (now < reconnect_until) return;
++        reconnect_until = 0;
++        /* Preserve a deliberate Busy/Invisible choice made during the wait. */
++        if (social.state(social.friends) == 0) social.set_state(social.friends, 1);
++        event("session-social-reconnect-finished", 1);
++    }
+     (void)dock_presence_poll(&social, now, event);
+     if (!friend_at || !friend_game || now < next_snapshot) return;
+     next_snapshot = now + 5000;
+     int count = social.friend_count(social.friends, 4);
+     if (count < 0 || count > 256) { event("session-social-game-snapshot-bounded", 0); return; }
+     int playing = 0, matching = 0, lobbies = 0, ids = 0, online = 0, asked = 0, queued = 0;
++    int names = 0, target = 0, target_online = 0, target_game = 0, target_lobby = 0;
+     for (int i = 0; i < count; ++i) {
+         uint64_t id = 0; struct game_info info = {0};
+         if (friend_at(social.friends, &id, i, 4) != &id || !id) continue;
+         ++ids;
++        bool selected_friend = false;
++        const char *name = friend_name ? friend_name(social.friends, id) : NULL;
++        if (name && strnlen(name, 128) > 0 && strnlen(name, 128) < 128) {
++            ++names;
++            selected_friend = (target_name && !_stricmp(name, target_name)) ||
++                              (target_alternate && !_stricmp(name, target_alternate));
++            if (selected_friend) { ++target; if (friend_state && friend_state(social.friends, id) > 0) ++target_online; }
++        }
+         if (friend_state && friend_state(social.friends, id) > 0) ++online;
+         if (request_info && requested_count < 256) {
+             unsigned found = 0;
+@@ -146,11 +183,21 @@
+         }
+         if (friend_game(social.friends, id, &info) && info.game) {
+             ++playing;
++            if (selected_friend && info.game == selected_app) { ++target_game; if (info.lobby) ++target_lobby; }
+             if (info.game == selected_app) { ++matching; if (info.lobby) ++lobbies; }
+         }
+     }
+     struct game_info own = {0};
+     int own_match = friend_game(social.friends, self_id, &own) && own.game == selected_app;
++    if (names != last_names) event("session-social-friend-names-readable", names);
++    last_names = names;
++    if (target_name || target_alternate) {
++        if (target != last_target) event("session-social-target-found", target);
++        if (target_online != last_target_online) event("session-social-target-online", target_online);
++        if (target_game != last_target_game) event("session-social-target-game", target_game);
++        if (target_lobby != last_target_lobby) event("session-social-target-lobby", target_lobby);
++        last_target = target; last_target_online = target_online; last_target_game = target_game; last_target_lobby = target_lobby;
++    }
+     if (asked) { event("session-social-info-requests", asked); event("session-social-info-queued", queued); }
+     if (ids != last_ids) event("session-social-friend-ids-readable", ids);
+     if (online != last_online) event("session-social-friends-online", online);

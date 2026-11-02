@@ -681,12 +681,14 @@ struct CMsgClientPICSProductInfoRequest {
 }
 
 struct CMsgClientPICSProductInfoResponse {
-    struct AppInfo {
+    struct AppInfo: Sendable {
         var appid: UInt32 = 0
         var changeNumber: UInt32 = 0
         /// Field 3, set when the request lacked a valid access token.
         var missingToken = false
-        var buffer: Data = Data()  // VDF binary format app info
+        var buffer: Data = Data()  // text VDF, or empty when served over HTTP
+        var sha = Data()
+        var size: UInt32 = 0
     }
     struct PackageInfo {
         var packageid: UInt32 = 0
@@ -701,6 +703,8 @@ struct CMsgClientPICSProductInfoResponse {
     // Field 6: how many more PICSProductInfoResponse messages are coming for this job.
     // When 0, all parts have been received.
     var pendingResponseCount: Int32 = 0
+    var httpHost = ""
+    var httpMinSize: UInt32 = 0
 
     static func deserialize(from data: Data) throws -> Self {
         var decoder = ProtobufDecoder(data)
@@ -717,7 +721,9 @@ struct CMsgClientPICSProductInfoResponse {
                     case 1: app.appid = UInt32(truncatingIfNeeded: try subDecoder.readVarint())
                     case 2: app.changeNumber = UInt32(truncatingIfNeeded: try subDecoder.readVarint())
                     case 3 where subTag.wireType == .varint: app.missingToken = try subDecoder.readVarint() != 0
+                    case 4: app.sha = try subDecoder.readBytes()
                     case 5: app.buffer = try subDecoder.readBytes()
+                    case 7: app.size = UInt32(truncatingIfNeeded: try subDecoder.readVarint())
                     default: try subDecoder.skip(wireType: subTag.wireType)
                     }
                 }
@@ -738,6 +744,8 @@ struct CMsgClientPICSProductInfoResponse {
                 msg.packages.append(pkg)
             case 4: msg.unknownPackages.append(UInt32(truncatingIfNeeded: try decoder.readVarint()))
             case 6: msg.pendingResponseCount = Int32(truncatingIfNeeded: try decoder.readVarint())
+            case 7: msg.httpMinSize = UInt32(truncatingIfNeeded: try decoder.readVarint())
+            case 8: msg.httpHost = try decoder.readString()
             default: try decoder.skip(wireType: tag.wireType)
             }
         }

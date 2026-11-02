@@ -1,0 +1,231 @@
+--- /dev/null
++++ b/src/frame.c
+@@ -0,0 +1,37 @@
++/* SPDX-License-Identifier: GPL-3.0-or-later
++ * Copyright 2026 WineVision VR contributors
++ * Madeira Converter Exception: see LICENSE-EXCEPTION.md */
++#include "frame.h"
++bool dock_frame_poll(struct dock_frame_pump *pump)
++{
++    if (!pump || !pump->engine || !pump->frame) return false;
++    pump->frame(pump->engine);
++    if (pump->ticks < UINT64_MAX) ++pump->ticks;
++    return true;
++}
++#ifdef _WIN64
++#include <stdlib.h>
++#include <string.h>
++static struct dock_frame_pump pump;
++void dock_frame_start(HMODULE module, void *engine, const struct dock_client_layout *layout, const struct sh_observer *o)
++{
++    memset(&pump, 0, sizeof(pump));
++    const char *setting = getenv("MADEIRA_STEAM_RUN_FRAME");
++    if (setting && !strcmp(setting, "0")) { o->event("session-frame-disabled", 1); return; }
++    /* Private engine ABI, independently verified against the exact January
++     * client. The public SteamClient021 has a different slot layout. */
++    if (!layout || strcmp(layout->sha256, "71b391fe9f3e2006cbc81a5c75eef3eb4186012deabfdb2c8b7e8d4850ecf640") ||
++        !dock_method_is((uintptr_t)module, engine, 19, 0x945e30)) {
++        o->event("session-frame-ready", 0); return;
++    }
++    pump.engine = engine;
++    pump.frame = (void (*)(void *))(*(void ***)engine)[19];
++    o->event("session-frame-ready", 1);
++}
++void dock_frame_tick(void) { (void)dock_frame_poll(&pump); }
++void dock_frame_stop(void (*event)(const char *, int32_t))
++{
++    if (pump.engine) event("session-frame-ticks", pump.ticks <= INT32_MAX ? (int32_t)pump.ticks : INT32_MAX);
++    memset(&pump, 0, sizeof(pump));
++}
++#endif
+--- /dev/null
++++ b/src/frame.h
+@@ -0,0 +1,16 @@
++/* SPDX-License-Identifier: GPL-3.0-or-later
++ * Copyright 2026 WineVision VR contributors
++ * Madeira Converter Exception: see LICENSE-EXCEPTION.md */
++#ifndef WVR_STEAM_FRAME_H
++#define WVR_STEAM_FRAME_H
++#include <stdbool.h>
++#include <stdint.h>
++struct dock_frame_pump { void *engine; void (*frame)(void *); uint64_t ticks; };
++bool dock_frame_poll(struct dock_frame_pump *pump);
++#ifdef _WIN64
++#include "session.h"
++void dock_frame_start(HMODULE module, void *engine, const struct dock_client_layout *layout, const struct sh_observer *observer);
++void dock_frame_tick(void);
++void dock_frame_stop(void (*event)(const char *, int32_t));
++#endif
++#endif
+--- a/src/launch.c
++++ b/src/launch.c
+@@ -8,6 +8,7 @@
+ #include "scm.h"
+ #include "validation.h"
+ #include "presence.h"
++#include "frame.h"
+ #include <stdio.h>
+ #include <string.h>
+ #include <wchar.h>
+@@ -144,6 +145,7 @@
+                 waiting = true;
+             }
+         }
++        dock_frame_tick();
+         for (unsigned batch = 0; batch < 64; ++batch) {
+             struct sh_callback cb = {0};
+             if (!api->get_callback(pipe, &cb)) break;
+@@ -296,6 +298,7 @@
+     result = 44;
+     while (!InterlockedCompareExchange(&interrupted, 0, 0)) {
+         dock_social_tick(o->now_ms(), o->event);
++        dock_frame_tick();
+         for (unsigned batch = 0; batch < 64; ++batch) {
+             struct sh_callback cb = {0};
+             if (!api->get_callback(pipe, &cb)) break;
+--- a/src/presence.c
++++ b/src/presence.c
+@@ -41,14 +41,27 @@
+ #ifdef _WIN64
+ #include <stdlib.h>
+ #include <string.h>
++#include <stddef.h>
+ static struct dock_presence social;
++static uint64_t self_id, next_snapshot;
++static uint32_t selected_app;
++static uint64_t *(*friend_at)(void *, uint64_t *, int32_t, int32_t);
++struct game_info { uint64_t game; uint32_t ip; uint16_t port, query_port; uint64_t lobby; };
++_Static_assert(sizeof(struct game_info) == 24, "pinned FriendGameInfo_t size");
++_Static_assert(offsetof(struct game_info, lobby) == 16, "pinned lobby offset");
++static bool (*friend_game)(void *, uint64_t, struct game_info *);
++static int32_t last_playing = -1, last_matching = -1, last_lobbies = -1, last_self = -1;
++
+ 
+ typedef void *(__thiscall *friends_getter)(void *, int32_t, int32_t);
+ typedef void *(__thiscall *utils_getter)(void *, int32_t);
+-void dock_social_start(HMODULE module, void *engine, int32_t user, int32_t pipe,
++void dock_social_start(HMODULE module, void *engine, int32_t user, int32_t pipe, uint64_t self, uint32_t app,
+                        const struct dock_client_layout *layout, const struct sh_observer *o)
+ {
+     memset(&social, 0, sizeof(social));
++    friend_at = NULL; friend_game = NULL; next_snapshot = 0;
++    self_id = self; selected_app = app;
++    last_playing = last_matching = last_lobbies = last_self = -1;
+     const char *setting = getenv("MADEIRA_STEAM_ONLINE_PRESENCE");
+     if (setting && !strcmp(setting, "0")) { o->event("session-social-disabled", 1); return; }
+     /* Independently inspected January client, selected only after its complete
+@@ -83,6 +96,15 @@
+             social.computer_active = (void (*)(void *, uint32_t))(*(void ***)utils)[6];
+         }
+     }
++    /* GetFriendByIndex uses MSVC's hidden CSteamID return buffer, not a
++     * uint64 return. GetFriendGamePlayed takes a value ID and 24-byte output.
++     * Only aggregate counts and a boolean self-app match leave this function. */
++    if (dock_method_is((uintptr_t)module, friends, 10, 0x7526f0) &&
++        dock_method_is((uintptr_t)module, friends, 23, 0x753250)) {
++        friend_at = (uint64_t *(*)(void *, uint64_t *, int32_t, int32_t))(*(void ***)friends)[10];
++        friend_game = (bool (*)(void *, uint64_t, struct game_info *))(*(void ***)friends)[23];
++    }
++    o->event("session-social-game-info-ready", friend_at && friend_game);
+     o->event("session-social-activity-ready", social.utils != NULL);
+     o->event("session-social-interface-ready", 1);
+     dock_social_tick(o->now_ms(), o->event);
+@@ -90,5 +112,25 @@
+ void dock_social_tick(uint64_t now, void (*event)(const char *, int32_t))
+ {
+     (void)dock_presence_poll(&social, now, event);
++    if (!friend_at || !friend_game || now < next_snapshot) return;
++    next_snapshot = now + 5000;
++    int count = social.friend_count(social.friends, 4);
++    if (count < 0 || count > 256) { event("session-social-game-snapshot-bounded", 0); return; }
++    int playing = 0, matching = 0, lobbies = 0;
++    for (int i = 0; i < count; ++i) {
++        uint64_t id = 0; struct game_info info = {0};
++        if (friend_at(social.friends, &id, i, 4) != &id || !id) continue;
++        if (friend_game(social.friends, id, &info) && info.game) {
++            ++playing;
++            if (info.game == selected_app) { ++matching; if (info.lobby) ++lobbies; }
++        }
++    }
++    struct game_info own = {0};
++    int own_match = friend_game(social.friends, self_id, &own) && own.game == selected_app;
++    if (playing != last_playing) event("session-social-friends-playing", playing);
++    if (matching != last_matching) event("session-social-friends-same-game", matching);
++    if (lobbies != last_lobbies) event("session-social-friend-lobbies", lobbies);
++    if (own_match != last_self) event("session-social-self-game-visible", own_match);
++    last_playing = playing; last_matching = matching; last_lobbies = lobbies; last_self = own_match;
+ }
+ #endif
+--- a/src/presence.h
++++ b/src/presence.h
+@@ -23,7 +23,7 @@
+                         void (*event)(const char *, int32_t));
+ #ifdef _WIN64
+ #include "session.h"
+-void dock_social_start(HMODULE module, void *engine, int32_t user, int32_t pipe,
++void dock_social_start(HMODULE module, void *engine, int32_t user, int32_t pipe, uint64_t self, uint32_t app,
+                        const struct dock_client_layout *layout, const struct sh_observer *observer);
+ void dock_social_tick(uint64_t now, void (*event)(const char *, int32_t));
+ #endif
+--- a/src/session.c
++++ b/src/session.c
+@@ -10,6 +10,7 @@
+ #include "validation.h"
+ #include "auth.h"
+ #include "presence.h"
++#include "frame.h"
+ #include <stdlib.h>
+ #include <string.h>
+ #include <stdio.h>
+@@ -77,6 +78,7 @@
+     int32_t last_state = -1;
+     unsigned logged_callbacks = 0;
+     for (unsigned tick = 0; tick < 3000 && o->now_ms() - begin < 60000; ++tick) {
++        dock_frame_tick();
+         for (unsigned batch = 0; batch < 64; ++batch) {
+             struct sh_callback cb = {0};
+             if (!api->get_callback(pipe, &cb)) break;
+@@ -131,6 +133,7 @@
+         o->event("session-unsupported-client", 1);
+         return result;
+     }
++    dock_frame_start(module, engine, layout, o);
+     user = api->create_global_user(&pipe);
+     if (user <= 0 || pipe <= 0) goto done;
+     void *client_user = ((get_user_fn)(*(void ***)engine)[8])(engine, user, pipe);
+@@ -237,6 +240,7 @@
+     unsigned logged_callbacks = 0, online_callbacks = 0, blips = 0, lost = 0, connect_failures = 0;
+     result = 34;
+     for (unsigned tick = 0; tick < 4500 && o->now_ms() - begin < 90000; ++tick) {
++        dock_frame_tick();
+         for (unsigned batch = 0; batch < 64; ++batch) {
+             struct sh_callback cb = {0};
+             if (!api->get_callback(pipe, &cb)) break;
+@@ -289,7 +293,7 @@
+                 was_online = true;
+                 online_at = now;
+                 o->event("session-authenticated-online", 1);
+-                dock_social_start(module, engine, user, pipe, layout, o);
++                dock_social_start(module, engine, user, pipe, id, (uint32_t)app, layout, o);
+             }
+         } else if (was_online) {
+             if (!offline_since) offline_since = now;
+@@ -362,6 +366,10 @@
+                         if (offline_abi && !offline_reported)
+                             o->event("session-offline-ready", ((can_offline_fn)v[214])(client_user));
+                     }
++                    if (!result && enabled("MADEIRA_STEAM_SOCIAL_PROBE") && !enabled("MADEIRA_STEAM_HOST_LAUNCH") && now - online_at < 20000) {
++                        o->sleep_ms(20);
++                        continue;
++                    }
+                     break;
+                 }
+             }
+@@ -388,6 +396,7 @@
+                  ((query_fn)v[4])(client_user) && ((query_fn)v[6])(client_user));
+     }
+ done:
++    dock_frame_stop(o->event);
+     dock_auth_clear(&auth, sizeof(auth));
+     o->event("session-auth-test-result", result);
+     if (pipe > 0 && user > 0) api->release_user(pipe, user);

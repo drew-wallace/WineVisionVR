@@ -262,6 +262,13 @@ if [[ "$x86_enabled" == 1 ]]; then
     AVPPLAY_VR_SMOKE_ARCH=x86 bash "$ROOT/windows-vr-tools/build_vr_smoke.sh"
 fi
 
+# The app carries its own verified renderer, independent of game downloads.
+if [[ -n "${AVPPLAY_ANGLE_ARCHIVE:-}" ]]; then
+    python3 "$ROOT/windows-vr-tools/stage_angle_compatibility.py" --archive "$AVPPLAY_ANGLE_ARCHIVE"
+else
+    python3 "$ROOT/windows-vr-tools/stage_angle_compatibility.py" --verify
+fi
+
 xcodegen generate --spec "$app_spec" \
     --project "$ROOT/visionos-windows-vr"
 signing_args=(CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO)

@@ -13,6 +13,7 @@ void madeira_seed_prefix_if_needed(const char *prefix_path);
 // The single CAMetalLayer DXMT's swapchain binds to (IOSDisplayShim.m keeps a raw pointer).
 void madeira_display_set_layer(CAMetalLayer *layer);
 void winios_screen_size(int *width, int *height);
+void winios_display_mode_changed(int width, int height);
 void winios_set_compositor_frame(double x, double y, double width, double height);
 void winios_set_desktop_rect(double x, double y, double width, double height, int set);
 int winios_desktop_point_from_window(double x, double y, int *px, int *py);
@@ -27,5 +28,6 @@ unsigned long long winios_surface_present_count(void);
 
 #import "../../windows-vr-native/include/WindowsVRFrameSynthesis.h"
 
+#import "Desktop/WindowsDesktopPresentation.h"
 // Share Wine's exact host/XInput snapshot layout with the desktop adapter.
 #import "../../third-party/madeira/app/Madeira/Winios/WiniosGamepad.h"

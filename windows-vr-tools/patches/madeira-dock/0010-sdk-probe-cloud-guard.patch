@@ -1,0 +1,24 @@
+--- a/src/launch.c
++++ b/src/launch.c
+@@ -263,6 +263,21 @@
+     o->event("launch-client-discovery-published", 1);
+     if (sdk_probe) {
+         o->event("sdk-probe-mode", 1);
++        /* This read-only networking comparison must not enable combined
++         * guest Cloud sync. Set and verify the genuine per-app preference
++         * before the original game SDK is loaded. No storage/file call occurs. */
++        if (strcmp(layout->sha256, "71b391fe9f3e2006cbc81a5c75eef3eb4186012deabfdb2c8b7e8d4850ecf640") ||
++            !dock_method_is((uintptr_t)module, engine, 24, 0x9445f0)) { result = 64; goto done; }
++        typedef void *(*storage_getter)(void *, int32_t, int32_t);
++        void *storage = ((storage_getter)(*(void ***)engine)[24])(engine, user, pipe);
++        if (!dock_method_is((uintptr_t)module, storage, 24, 0x814250) ||
++            !dock_method_is((uintptr_t)module, storage, 25, 0x839830)) { result = 64; goto done; }
++        bool (*cloud_enabled)(void *, uint32_t) = (bool (*)(void *, uint32_t))(*(void ***)storage)[24];
++        void (*set_cloud)(void *, uint32_t, bool) = (void (*)(void *, uint32_t, bool))(*(void ***)storage)[25];
++        set_cloud(storage, appid, false);
++        bool disabled = !cloud_enabled(storage, appid);
++        o->event("sdk-probe-cloud-disabled", disabled);
++        if (!disabled) { result = 64; goto done; }
+         result = dock_sdk_probe(expected, appid, pipe, api, o);
+         o->event("sdk-probe-result", result);
+         goto done;

@@ -1,0 +1,171 @@
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -1369,7 +1369,7 @@
+     if (status == DrawCallStatus::Tessellation) {
+       return TessellationDraw(ControlPointCount, VertexCount, 1, StartVertexLocation, 0);
+     }
+-    EmitOP([Primitive, StartVertexLocation, VertexCount](ArgumentEncodingContext& enc) {
++    EmitDraw([Primitive, StartVertexLocation, VertexCount](ArgumentEncodingContext& enc) {
+       enc.bumpVisibilityResultOffset();
+       enc.resolveRenderPassBarrier();
+       auto &cmd = enc.encodeRenderCommand<wmtcmd_render_draw>();
+@@ -1407,7 +1407,7 @@
+     auto IndexBufferOffset =
+         state_.InputAssembler.IndexBufferOffset +
+         StartIndexLocation * (state_.InputAssembler.IndexBufferFormat == DXGI_FORMAT_R32_UINT ? 4 : 2);
+-    EmitOP([IndexType, IndexBufferOffset, Primitive, IndexCount, BaseVertexLocation](ArgumentEncodingContext &enc) {
++    EmitDraw([IndexType, IndexBufferOffset, Primitive, IndexCount, BaseVertexLocation](ArgumentEncodingContext &enc) {
+       enc.bumpVisibilityResultOffset();
+       auto [index_buffer, index_sub_offset] = enc.currentIndexBuffer();
+       enc.resolveRenderPassBarrier();
+@@ -1447,7 +1447,7 @@
+           ControlPointCount, VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation
+       );
+     }
+-    EmitOP([Primitive, StartVertexLocation, VertexCountPerInstance, InstanceCount,
++    EmitDraw([Primitive, StartVertexLocation, VertexCountPerInstance, InstanceCount,
+           StartInstanceLocation](ArgumentEncodingContext &enc) {
+       enc.bumpVisibilityResultOffset();
+       enc.resolveRenderPassBarrier();
+@@ -1494,7 +1494,7 @@
+     auto IndexBufferOffset =
+         state_.InputAssembler.IndexBufferOffset +
+         StartIndexLocation * (state_.InputAssembler.IndexBufferFormat == DXGI_FORMAT_R32_UINT ? 4 : 2);
+-    EmitOP([IndexType, IndexBufferOffset, Primitive, InstanceCount, BaseVertexLocation, StartInstanceLocation,
++    EmitDraw([IndexType, IndexBufferOffset, Primitive, InstanceCount, BaseVertexLocation, StartInstanceLocation,
+           IndexCountPerInstance](ArgumentEncodingContext &enc) {
+       enc.bumpVisibilityResultOffset();
+       auto [index_buffer, index_sub_offset] = enc.currentIndexBuffer();
+@@ -1519,7 +1519,7 @@
+   ) {
+     auto draw_arguments_offset = PreAllocateArgumentBuffer(sizeof(DXMT_DRAW_ARGUMENTS), 32);
+     auto max_object_threadgroups = max_object_threadgroups_;
+-    EmitOP([=](ArgumentEncodingContext &enc) {
++    EmitDraw([=](ArgumentEncodingContext &enc) {
+       DXMT_DRAW_ARGUMENTS *draw_argument = enc.getMappedArgumentBuffer<DXMT_DRAW_ARGUMENTS>(draw_arguments_offset);
+       draw_argument->StartVertex = StartVertexLocation;
+       draw_argument->VertexCount = VertexCountPerInstance;
+@@ -1559,7 +1559,7 @@
+     auto IndexBufferOffset = state_.InputAssembler.IndexBufferOffset;
+     auto draw_arguments_offset = PreAllocateArgumentBuffer(sizeof(DXMT_DRAW_INDEXED_ARGUMENTS), 32);
+     auto max_object_threadgroups = max_object_threadgroups_;
+-    EmitOP([=](ArgumentEncodingContext &enc) {
++    EmitDraw([=](ArgumentEncodingContext &enc) {
+       DXMT_DRAW_INDEXED_ARGUMENTS *draw_argument = enc.getMappedArgumentBuffer<DXMT_DRAW_INDEXED_ARGUMENTS>(draw_arguments_offset);
+       draw_argument->BaseVertex = BaseVertexLocation;
+       draw_argument->IndexCount = IndexCountPerInstance;
+@@ -1602,7 +1602,7 @@
+   ) {
+     auto draw_arguments_offset = PreAllocateArgumentBuffer(sizeof(DXMT_DRAW_ARGUMENTS), 32);
+     auto max_object_threadgroups = max_object_threadgroups_;
+-    EmitOP([=, topo = state_.InputAssembler.Topology](ArgumentEncodingContext &enc) {
++    EmitDraw([=, topo = state_.InputAssembler.Topology](ArgumentEncodingContext &enc) {
+       DXMT_DRAW_ARGUMENTS *draw_argument = enc.getMappedArgumentBuffer<DXMT_DRAW_ARGUMENTS>(draw_arguments_offset);
+       draw_argument->StartVertex = StartVertexLocation;
+       draw_argument->VertexCount = VertexCountPerInstance;
+@@ -1636,7 +1636,7 @@
+     auto IndexBufferOffset = state_.InputAssembler.IndexBufferOffset;
+     auto draw_arguments_offset = PreAllocateArgumentBuffer(sizeof(DXMT_DRAW_INDEXED_ARGUMENTS), 32);
+     auto max_object_threadgroups = max_object_threadgroups_;
+-    EmitOP([=, topo = state_.InputAssembler.Topology](ArgumentEncodingContext &enc) {
++    EmitDraw([=, topo = state_.InputAssembler.Topology](ArgumentEncodingContext &enc) {
+       DXMT_DRAW_INDEXED_ARGUMENTS *draw_argument = enc.getMappedArgumentBuffer<DXMT_DRAW_INDEXED_ARGUMENTS>(draw_arguments_offset);
+       draw_argument->BaseVertex = BaseVertexLocation;
+       draw_argument->IndexCount = IndexCountPerInstance;
+@@ -1688,7 +1688,7 @@
+         state_.InputAssembler.IndexBufferFormat == DXGI_FORMAT_R32_UINT ? WMTIndexTypeUInt32 : WMTIndexTypeUInt16;
+     auto IndexBufferOffset = state_.InputAssembler.IndexBufferOffset;
+     if (auto bindable = GetResourceCommon(pBufferForArgs)) {
+-      EmitOP([IndexType, IndexBufferOffset, Primitive, ArgBuffer = bindable->buffer(),
++      EmitDraw([IndexType, IndexBufferOffset, Primitive, ArgBuffer = bindable->buffer(),
+               AlignedByteOffsetForArgs](ArgumentEncodingContext &enc) {
+         auto [buffer, buffer_offset] = enc.access<PipelineStage::Vertex>(
+             ArgBuffer, AlignedByteOffsetForArgs, sizeof(DXMT_DRAW_INDEXED_ARGUMENTS), ResourceAccess::Read
+@@ -1727,7 +1727,7 @@
+       return TessellationDrawIndirect(ControlPointCount, pBufferForArgs, AlignedByteOffsetForArgs);
+     }
+     if (auto bindable = GetResourceCommon(pBufferForArgs)) {
+-      EmitOP([Primitive, ArgBuffer = bindable->buffer(), AlignedByteOffsetForArgs](ArgumentEncodingContext &enc) {
++      EmitDraw([Primitive, ArgBuffer = bindable->buffer(), AlignedByteOffsetForArgs](ArgumentEncodingContext &enc) {
+         auto [buffer, buffer_offset] = enc.access<PipelineStage::Vertex>(
+             ArgBuffer, AlignedByteOffsetForArgs, sizeof(DXMT_DRAW_ARGUMENTS), ResourceAccess::Read
+         );
+@@ -1748,7 +1748,7 @@
+   ) {
+     auto max_object_threadgroups = max_object_threadgroups_;
+     if (auto bindable = GetResourceCommon(pBufferForArgs)) {
+-      EmitOP([=, topo = state_.InputAssembler.Topology, ArgBuffer = bindable->buffer()](ArgumentEncodingContext &enc) {
++      EmitDraw([=, topo = state_.InputAssembler.Topology, ArgBuffer = bindable->buffer()](ArgumentEncodingContext &enc) {
+         auto [buffer, buffer_offset] = enc.access<PipelineStage::Vertex>(
+             ArgBuffer, AlignedByteOffsetForArgs, sizeof(DXMT_DRAW_ARGUMENTS), ResourceAccess::Read
+         );
+@@ -1782,7 +1782,7 @@
+     auto max_object_threadgroups = max_object_threadgroups_;
+ 
+     if (auto bindable = GetResourceCommon(pBufferForArgs)) {
+-      EmitOP([=, topo = state_.InputAssembler.Topology, ArgBuffer = bindable->buffer()](ArgumentEncodingContext &enc) {
++      EmitDraw([=, topo = state_.InputAssembler.Topology, ArgBuffer = bindable->buffer()](ArgumentEncodingContext &enc) {
+         auto [buffer, buffer_offset] = enc.access<PipelineStage::Vertex>(
+             ArgBuffer, AlignedByteOffsetForArgs, sizeof(DXMT_DRAW_INDEXED_ARGUMENTS), ResourceAccess::Read
+         );
+@@ -1817,7 +1817,7 @@
+   ) {
+     auto max_object_threadgroups = max_object_threadgroups_;
+     if (auto bindable = GetResourceCommon(pBufferForArgs)) {
+-      EmitOP([=, ArgBuffer = bindable->buffer()](ArgumentEncodingContext &enc) {
++      EmitDraw([=, ArgBuffer = bindable->buffer()](ArgumentEncodingContext &enc) {
+         auto [buffer, buffer_offset] = enc.access<PipelineStage::Vertex>(
+             ArgBuffer, AlignedByteOffsetForArgs, sizeof(DXMT_DRAW_ARGUMENTS), ResourceAccess::Read
+         );
+@@ -1854,7 +1854,7 @@
+     auto max_object_threadgroups = max_object_threadgroups_;
+ 
+     if (auto bindable = GetResourceCommon(pBufferForArgs)) {
+-      EmitOP([=, ArgBuffer = bindable->buffer()](ArgumentEncodingContext &enc) {
++      EmitDraw([=, ArgBuffer = bindable->buffer()](ArgumentEncodingContext &enc) {
+         auto [buffer, buffer_offset] = enc.access<PipelineStage::Vertex>(
+             ArgBuffer, AlignedByteOffsetForArgs, sizeof(DXMT_DRAW_INDEXED_ARGUMENTS), ResourceAccess::Read
+         );
+@@ -3335,6 +3335,18 @@
+ 
+   template <CommandWithContext<ArgumentEncodingContext> cmd> void EmitST(cmd &&fn);
+   template <CommandWithContext<ArgumentEncodingContext> cmd> void EmitOP(cmd &&fn);
++
++  // Resolve readiness on the submission thread after asynchronous PSO work.
++  // A rejected PSO must invalidate an earlier binding and suppress this draw.
++  template <CommandWithContext<ArgumentEncodingContext> cmd>
++  void EmitDraw(cmd &&fn) {
++    EmitOP([fn = std::forward<cmd>(fn)](ArgumentEncodingContext &enc) mutable {
++      if (!enc.currentRenderEncoder()->last_pso)
++        return;
++      fn(enc);
++    });
++  }
++
+ 
+   template <typename T> moveonly_list<T> AllocateCommandData(size_t n = 1);
+ 
+@@ -4794,6 +4806,7 @@
+       render_encoder->use_tessellation = 1;
+       MTL_COMPILED_TESSELLATION_MESH_PIPELINE GraphicsPipeline{};
+       pso->GetPipeline(&GraphicsPipeline); // may block
++      enc.currentRenderEncoder()->last_pso = GraphicsPipeline.PipelineState;
+       enc.tess_num_output_control_point_element = GraphicsPipeline.NumControlPointOutputElement;
+       enc.tess_threads_per_patch = GraphicsPipeline.ThreadsPerPatch;
+       if (!GraphicsPipeline.PipelineState)
+@@ -4842,6 +4855,7 @@
+       render_encoder->use_geometry = 1;
+       MTL_COMPILED_GRAPHICS_PIPELINE GraphicsPipeline{};
+       pso->GetPipeline(&GraphicsPipeline); // may block
++      enc.currentRenderEncoder()->last_pso = GraphicsPipeline.PipelineState;
+       if (!GraphicsPipeline.PipelineState)
+         return;
+       auto &cmd = enc.encodeRenderCommand<wmtcmd_render_setpso>();
+@@ -4908,6 +4922,7 @@
+       enc.currentRenderEncoder()->foveation_safe &= foveationSafe;
+       MTL_COMPILED_GRAPHICS_PIPELINE GraphicsPipeline{};
+       pso->GetPipeline(&GraphicsPipeline); // may block
++      enc.currentRenderEncoder()->last_pso = GraphicsPipeline.PipelineState;
+       if (!GraphicsPipeline.PipelineState)
+         return;
+       auto &cmd = enc.encodeRenderCommand<wmtcmd_render_setpso>();

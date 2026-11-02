@@ -1,0 +1,52 @@
+--- a/build/ntdll-unix/audio_null_ios.c
++++ b/build/ntdll-unix/audio_null_ios.c
+@@ -972,12 +972,12 @@
+     pthread_mutex_unlock(&g_dev_lock);
+ }
+ 
+-/* WVR audio output recovery v1: control-thread only. Keep the existing
+- * process-wide unit and all WASAPI clients/rings; recreating RemoteIO has
+- * previously caused caulk thread-start failures. Never call from render. */
++/* WVR audio output recovery v1: control-thread only. Release the output
++ * unit's initialized resources before rebuilding them. Keep the one RemoteIO
++ * instance and all WASAPI clients/rings; never call from the render thread. */
+ __attribute__((visibility("default"))) int32_t wvr_audio_output_reset_v1(void)
+ {
+-    OSStatus stopped = noErr, reset, started = noErr;
++    OSStatus stopped = noErr, uninitialized, initialized = noErr, started = noErr;
+     int i, any = 0;
+     pthread_mutex_lock(&g_dev_lock);
+     if (!g_dev.au) { pthread_mutex_unlock(&g_dev_lock); return kAudioUnitErr_Uninitialized; }
+@@ -989,22 +989,24 @@
+         stopped = AudioOutputUnitStop(g_dev.au);
+         if (stopped) {
+             pthread_mutex_unlock(&g_dev_lock);
+-            fprintf(stderr, "[ios_audio] wvr-reset stop failed=%d\n", (int)stopped);
++            fprintf(stderr, "[ios_audio] wvr-reinitialize stop failed=%d\n", (int)stopped);
+             return stopped;
+         }
+         g_dev.running = 0;
+     }
+-    reset = AudioUnitReset(g_dev.au, kAudioUnitScope_Global, 0);
+-    /* Even if Reset fails, attempt to restore the previously active clients.
+-     * Only the real Start result can mark the endpoint running again. */
+-    if (any) {
++    uninitialized = AudioUnitUninitialize(g_dev.au);
++    if (!uninitialized) initialized = AudioUnitInitialize(g_dev.au);
++    /* A failed uninitialize leaves the old initialization in place: attempt
++     * to resume it, but still report that failure. A failed initialize cannot
++     * be started; leave running=false so a subsequent recovery can retry. */
++    if (any && (uninitialized || !initialized)) {
+         started = AudioOutputUnitStart(g_dev.au);
+         if (!started) g_dev.running = 1;
+     }
+     pthread_mutex_unlock(&g_dev_lock);
+-    fprintf(stderr, "[ios_audio] wvr-reset reset=%d start=%d clients-active=%d\n",
+-            (int)reset, (int)started, any);
+-    return started ? started : reset;
++    fprintf(stderr, "[ios_audio] wvr-reinitialize uninitialize=%d initialize=%d start=%d clients-active=%d\n",
++            (int)uninitialized, (int)initialized, (int)started, any);
++    return uninitialized ? uninitialized : initialized ? initialized : started;
+ }
+ 
+ /* ml1026: "this client feeds the real endpoint", replacing the old per-stream

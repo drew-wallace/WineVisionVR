@@ -52,11 +52,24 @@ assert(defaults.bool(forKey: WindowsVRAngleTrial.preferenceKey))
 defaults.set(false, forKey: WindowsVRAngleTrial.preferenceKey)
 WindowsVRAngleTrial.adoptInstalledProfile(available: true, defaults: defaults)
 assert(!defaults.bool(forKey: WindowsVRAngleTrial.preferenceKey))
+// Clean app data needs no cache or diagnostic import when the signed bundle is available.
+let freshDocuments = root.appendingPathComponent("fresh-documents")
+assert(WindowsVRAngleTrial.hasAvailableAssets(in: freshDocuments, bundled: source, pins: pins))
+expect(try WindowsVRAngleTrial.sourceDirectory(documents: freshDocuments, runID: nil,
+    bundled: source, pins: pins) == source)
+// A UUID probe remains isolated; a good bundled renderer cannot hide a broken upload.
+expect(try WindowsVRAngleTrial.sourceDirectory(documents: freshDocuments, runID: run,
+    bundled: source, pins: pins).path.contains("ProbeRuns/" + run))
+let absentBundle = root.appendingPathComponent("absent-bundle")
+assert(!WindowsVRAngleTrial.hasAvailableAssets(in: freshDocuments, bundled: absentBundle, pins: pins))
 let profileDocs = root.appendingPathComponent("profile-documents")
 try WindowsVRAngleTrial.installProfile(source: source, documents: profileDocs, defaults: defaults, pins: pins)
 assert(defaults.bool(forKey: WindowsVRAngleTrial.preferenceKey))
 // Fixtures use test hashes: production cache detection must require the real pins.
 assert(!WindowsVRAngleTrial.hasCachedAssets(in: profileDocs))
+assert(WindowsVRAngleTrial.hasAvailableAssets(in: profileDocs, bundled: nil, pins: pins))
+expect(try WindowsVRAngleTrial.sourceDirectory(documents: profileDocs, runID: nil,
+    bundled: nil, pins: pins) == WindowsVRAngleTrial.cachedSource(in: profileDocs))
 // A second install verifies existing cache files instead of overwriting them.
 let cached = WindowsVRAngleTrial.cachedSource(in: profileDocs).appendingPathComponent(pins[0].name)
 try Data([9, 8, 7]).write(to: cached)
@@ -64,12 +77,28 @@ defaults.set(false, forKey: WindowsVRAngleTrial.preferenceKey)
 mustThrow { try WindowsVRAngleTrial.installProfile(source: source, documents: profileDocs, defaults: defaults, pins: pins) }
 assert(!defaults.bool(forKey: WindowsVRAngleTrial.preferenceKey))
 expect(try Data(contentsOf: cached) == Data([9, 8, 7]))
+// A damaged/deleted cache cannot disable the bundled renderer or alter the user's choice.
+assert(WindowsVRAngleTrial.hasAvailableAssets(in: profileDocs, bundled: source, pins: pins))
+expect(try WindowsVRAngleTrial.sourceDirectory(documents: profileDocs, runID: nil,
+    bundled: source, pins: pins) == source)
+WindowsVRAngleTrial.adoptInstalledProfile(available: true, defaults: defaults)
+assert(!defaults.bool(forKey: WindowsVRAngleTrial.preferenceKey))
+try fm.removeItem(at: WindowsVRAngleTrial.cachedSource(in: profileDocs))
+assert(WindowsVRAngleTrial.hasAvailableAssets(in: profileDocs, bundled: source, pins: pins))
 try prepare()
 for pin in pins { expect(try Data(contentsOf: game.appendingPathComponent(pin.name)) == data) }
 // Simulate restart after publication and after only one of two publications.
 try fm.removeItem(at: game.appendingPathComponent(pins[0].name))
 try recover()
 for pin in pins { assert(!fm.fileExists(atPath: game.appendingPathComponent(pin.name).path)) }
+try recover()
+// Steam uninstall/re-download creates a fresh game directory. The old journal
+// must recover safely and the next launch must re-publish both renderer DLLs.
+try prepare()
+try fm.removeItem(at: game)
+try fm.createDirectory(at: game, withIntermediateDirectories: true)
+try prepare()
+for pin in pins { expect(try Data(contentsOf: game.appendingPathComponent(pin.name)) == data) }
 try recover()
 // Borrow a matching original without taking ownership; remove only our second DLL.
 let original = game.appendingPathComponent(pins[0].name)
@@ -109,7 +138,7 @@ try fm.removeItem(at: game)
 try fm.createSymbolicLink(atPath: game.path, withDestinationPath: external.path)
 mustThrow { try prepare() }
 expect(try fm.contentsOfDirectory(atPath: external.path).isEmpty)
-print("PASS: scoped trial, exclusive publication, interrupted publication, borrowed files, conflicts, changed inodes, changed bytes, malformed journals and symlink confinement")
+print("PASS: bundled renderer, missing/corrupt/deleted cache, fresh Steam download, opt-out, scoped trial, exclusive publication, interrupted publication, borrowed files, conflicts, changed inodes, changed bytes, malformed journals and symlink confinement")
 '''
         with tempfile.TemporaryDirectory(prefix="wvr-angle-trial-") as work:
             work = Path(work)

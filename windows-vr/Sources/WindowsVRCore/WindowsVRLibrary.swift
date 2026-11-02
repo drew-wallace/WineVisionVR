@@ -44,6 +44,7 @@ public struct WindowsVRLaunchProfile: Codable, Sendable, Equatable, Identifiable
     public var renderScale: Float
     public var renderingPreset: WindowsVRRenderingPreset?
     public var presentation: WindowsPresentationMode
+    public var desktopAspectRatio: WindowsDesktopAspectRatio
 
     public init(
         id: String = UUID().uuidString,
@@ -54,7 +55,8 @@ public struct WindowsVRLaunchProfile: Codable, Sendable, Equatable, Identifiable
         environment: [String: String] = [:],
         renderScale: Float = 1,
         presentation: WindowsPresentationMode = .immersiveVR,
-        renderingPreset: WindowsVRRenderingPreset? = nil
+        renderingPreset: WindowsVRRenderingPreset? = nil,
+        desktopAspectRatio: WindowsDesktopAspectRatio = .automatic
     ) throws {
         let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanName.isEmpty, cleanName.count <= 80 else {
@@ -74,11 +76,12 @@ public struct WindowsVRLaunchProfile: Codable, Sendable, Equatable, Identifiable
         self.renderScale = renderScale
         self.presentation = presentation
         self.renderingPreset = renderingPreset
+        self.desktopAspectRatio = desktopAspectRatio
         try validate()
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, backend, graphics, launchArguments, environment, renderScale, presentation, renderingPreset
+        case id, name, backend, graphics, launchArguments, environment, renderScale, presentation, renderingPreset, desktopAspectRatio
     }
 
     public init(from decoder: Decoder) throws {
@@ -92,7 +95,8 @@ public struct WindowsVRLaunchProfile: Codable, Sendable, Equatable, Identifiable
             environment: values.decodeIfPresent([String: String].self, forKey: .environment) ?? [:],
             renderScale: values.decodeIfPresent(Float.self, forKey: .renderScale) ?? 1,
             presentation: values.decodeIfPresent(WindowsPresentationMode.self, forKey: .presentation) ?? .immersiveVR,
-            renderingPreset: values.decodeIfPresent(WindowsVRRenderingPreset.self, forKey: .renderingPreset)
+            renderingPreset: values.decodeIfPresent(WindowsVRRenderingPreset.self, forKey: .renderingPreset),
+            desktopAspectRatio: values.decodeIfPresent(WindowsDesktopAspectRatio.self, forKey: .desktopAspectRatio) ?? .automatic
         )
     }
 
@@ -129,6 +133,7 @@ public struct WindowsVRLaunchProfile: Codable, Sendable, Equatable, Identifiable
 public struct WindowsVRLibraryEntry: Codable, Sendable, Equatable, Identifiable {
     public let id: String
     public var manifest: WindowsGameManifest
+    public var steamAppID: Int?
     public var folderBookmark: Data
     public var profiles: [WindowsVRLaunchProfile]
     public var selectedProfileID: String?
@@ -141,16 +146,26 @@ public struct WindowsVRLibraryEntry: Codable, Sendable, Equatable, Identifiable 
         folderBookmark: Data,
         profiles: [WindowsVRLaunchProfile],
         selectedProfileID: String?,
+        steamAppID: Int? = nil,
         addedAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
         self.id = id
         self.manifest = manifest
+        self.steamAppID = steamAppID
         self.folderBookmark = folderBookmark
         self.profiles = profiles
         self.selectedProfileID = selectedProfileID
         self.addedAt = addedAt
         self.updatedAt = updatedAt
+    }
+
+    public func matchesGame(_ other: WindowsGameManifest, steamAppID: Int?) -> Bool {
+        guard manifest.id == other.id else { return false }
+        guard manifest.id == "steam.shared" else { return true }
+        if let savedID = self.steamAppID { return savedID == steamAppID }
+        // Legacy entries predate the Steam identity field.
+        return manifest.title == other.title
     }
 
     public var selectedProfile: WindowsVRLaunchProfile? {

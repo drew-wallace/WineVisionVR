@@ -1,0 +1,13 @@
+--- a/src/main.c
++++ b/src/main.c
+@@ -279,6 +279,10 @@
+     /* Restrict dependency search to the client directory and system32. No
+      * fallback to a current-directory LoadLibrary or to a renamed client DLL.
+      */
++    bool no_friends_ui = false;
++    for (int i = 1; i < argc && i < 65; ++i)
++        if (!strcmp(argv[i], "-nofriendsui")) no_friends_ui = true;
++    event("client-no-friends-ui-argument", no_friends_ui);
+     event("load-client-begin", 0);
+     HMODULE module = LoadLibraryExW(path, NULL,
+                                    LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
