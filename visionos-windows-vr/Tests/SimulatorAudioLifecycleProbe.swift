@@ -24,6 +24,13 @@ struct SimulatorAudioLifecycleProbe {
         let state = RuntimeState()
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playback, options: .mixWithOthers)
+        try WindowsVRAudioDiagnostics.configureSpatialExperience(immersive: true)
+        assert(session.intendedSpatialExperience is AVAudioSession.BypassedSpatialExperience,
+               "VR audio must bypass the system's window anchoring")
+        try WindowsVRAudioDiagnostics.configureSpatialExperience(immersive: false)
+        assert(session.intendedSpatialExperience is AVAudioSession.HeadTrackedSpatialExperience,
+               "Desktop audio retains system spatialization")
+        try WindowsVRAudioDiagnostics.configureSpatialExperience(immersive: true)
         try session.setActive(true)
         WindowsVRAudioDiagnostics.start { state.running }
         WindowsVRAudioDiagnostics.start { state.running } // Observer installation is idempotent.
@@ -48,6 +55,8 @@ struct SimulatorAudioLifecycleProbe {
         center.post(name: UIApplication.didBecomeActiveNotification, object: nil)
         try await settle()
         assert(nativeCalls.count == 2, "A focus change alone must not restart audio")
+        assert(session.intendedSpatialExperience is AVAudioSession.BypassedSpatialExperience,
+               "Recovery must preserve immersive audio routing")
         state.running = false
         center.post(name: AVAudioSession.didBecomeInactiveNotification, object: session)
         center.post(name: AVAudioSession.didBecomeActiveNotification, object: session)

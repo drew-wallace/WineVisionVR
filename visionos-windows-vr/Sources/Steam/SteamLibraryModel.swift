@@ -127,15 +127,7 @@ final class SteamLibraryModel: ObservableObject {
     }
 
     private static func isSuspensionConnectionError(_ error: Error) -> Bool {
-        if let urlError = error as? URLError {
-            return [.networkConnectionLost, .notConnectedToInternet, .timedOut,
-                    .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed].contains(urlError.code)
-        }
-        guard let steamError = error as? SteamError else { return false }
-        switch steamError {
-        case .disconnected, .connectionTimeout, .connectionFailed, .noServersAvailable: return true
-        default: return false
-        }
+        SteamConnectionRecovery.isConnectionFailure(error)
     }
 
     private struct SavedDownloadQueue: Codable {
@@ -294,6 +286,7 @@ final class SteamLibraryModel: ObservableObject {
             return
         }
         isLoadingLibrary = true
+        error = nil
         defer {
             isLoadingLibrary = false
             if reloadLibraryWhenIdle {
@@ -308,12 +301,20 @@ final class SteamLibraryModel: ObservableObject {
         let account = SteamSignIn.accountName
         guard signedIn, account != nil else { return }
         do {
-            try await session.connectAndLogin()
+            let result = try await SteamConnectionRecovery.retry(operation: {
+                try await session.ensureConnected()
+                return try await libraryFetcher.fetchOwnedApps()
+            }, beforeRetry: {
+                guard generation == self.accountGeneration, !self.runtimeBusy,
+                      !self.sessionReservedForLaunch else { throw CancellationError() }
+                await self.session.suspend()
+                try await Task.sleep(for: .seconds(1))
+                guard generation == self.accountGeneration, !self.runtimeBusy,
+                      !self.sessionReservedForLaunch else { throw CancellationError() }
+                self.session.resume()
+            })
             guard generation == accountGeneration, signedIn, account == SteamSignIn.accountName,
                   !runtimeBusy, !sessionReservedForLaunch else { return }
-            let result = try await libraryFetcher.fetchOwnedApps()
-            guard generation == accountGeneration, signedIn,
-                  account == SteamSignIn.accountName, !sessionReservedForLaunch else { return }
             games = result.map { SteamLibraryEntry(game: SteamOwnedGame($0)) }
                 .sorted { $0.game.name.localizedCaseInsensitiveCompare($1.game.name) == .orderedAscending }
             refreshInstalled()
@@ -349,7 +350,8 @@ final class SteamLibraryModel: ObservableObject {
                 SteamLog.event("[steam-library] save-retry-journal-unavailable")
             }
         } catch {
-            if generation == accountGeneration, signedIn { self.error = SteamSignIn.message(error) }
+            if generation == accountGeneration, signedIn, !runtimeBusy,
+               !sessionReservedForLaunch, !(error is CancellationError) { self.error = SteamSignIn.message(error) }
         }
     }
 
@@ -672,24 +674,55 @@ final class SteamLibraryModel: ObservableObject {
 
     /// Runs at actual launch, including launches restored from saved profiles.
     /// runtimeBusy may already be true while the launcher prepares presentation.
-    func prepareGameServices(appID: Int, option: UInt32) async throws {
+    func prepareGameServices(appID: Int, option: UInt32, offline: Bool = false) async throws -> Bool {
         guard !servicesBusy else { throw DockError.message("Steam is already synchronizing saves.") }
         servicesBusy = true
         defer { servicesBusy = false }
         await prepareForLaunch()
+        if offline || DockOffline.networkDown {
+            try prepareOfflineGameServices(appID)
+            return true
+        }
         session.resume()
         do {
-            try await session.ensureConnected()
-            _ = try await fetcher.fetchOwnedApps() // fresh ownership, including purchases/refunds
-            guard fetcher.ownedApps.contains(UInt32(appID)) else { throw DockError.message("Steam did not confirm ownership of this game.") }
-            try await syncServices(appID, launchOption: option)
+            try await SteamConnectionRecovery.retry(operation: {
+                try await self.session.ensureConnected()
+                _ = try await self.fetcher.fetchOwnedApps()
+                guard self.fetcher.ownedApps.contains(UInt32(appID)) else {
+                    throw DockError.message("Steam did not confirm ownership of this game.")
+                }
+                try await self.syncServices(appID, launchOption: option)
+            }, beforeRetry: {
+                self.serviceStatus[appID] = "Steam connection interrupted; retrying automatically…"
+                await self.session.suspend()
+                try await Task.sleep(for: .seconds(1))
+                self.session.resume()
+            })
             serviceAppID = appID
+            serviceWarnings.removeValue(forKey: appID)
             await session.suspend()
+            return false
         } catch {
-            serviceStatus[appID] = error.localizedDescription
             await session.suspend()
+            try Task.checkCancellation()
+            if SteamConnectionRecovery.isConnectionFailure(error) {
+                try prepareOfflineGameServices(appID)
+                return true
+            }
+            serviceStatus[appID] = error.localizedDescription
             throw error
         }
+    }
+
+    private func prepareOfflineGameServices(_ appID: Int) throws {
+        guard let account = cloudSettingsAccount else {
+            throw DockError.message("Sign in to Steam once before using its saved offline sign-in.")
+        }
+        try gameServices.prepareOfflineLaunch(appID, account: account)
+        serviceAppID = nil
+        serviceStatus[appID] = "Starting offline with local saves; Steam Cloud sync skipped"
+        serviceWarnings[appID] = "Playing offline. Sync saves when Steam is available again."
+        onlineStatus = "Steam offline"
     }
 
     private func syncServices(_ appID: Int, launchOption: UInt32? = nil, preferCloud: Bool = false) async throws {

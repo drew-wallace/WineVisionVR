@@ -451,7 +451,7 @@ enum MadeiraDock {
         return appID == 386690 ? "-vrmode openvr" : nil
     }
 
-    @MainActor static func configure(_ game: DockGame, launchOption: UInt32 = 0) {
+    @MainActor static func configure(_ game: DockGame, launchOption: UInt32 = 0, offline: Bool = false) {
         if let arguments = extraLaunchArguments(appID: game.id) {
             setenv("MADEIRA_STEAM_HOST_EXTRA_ARGS", arguments, 1)
         } else {
@@ -512,7 +512,7 @@ enum MadeiraDock {
         let guardMap = SteamSignIn.flag("MADEIRA_DOCK_IMAGE_MAP_GUARD", default: true)
         if guardMap { setenv("MADEIRA_IMAGE_MAP_GUARD", "1", 1) }
         SteamLog.event("[dock-launch] image-map-guard=\(guardMap ? 1 : 0)")
-        DockOffline.configure(appID: game.id)
+        DockOffline.configure(appID: game.id, forceOffline: offline)
     }
 
     /// Wine's explorer opens a virtual desktop and starts the host in it. With
@@ -622,10 +622,10 @@ enum DockOffline {
     @MainActor private static var sessionMarked = false
 
     /// Part of MadeiraDock.configure: tells the host when there is no network.
-    @MainActor static func configure(appID: Int) {
+    @MainActor static func configure(appID: Int, forceOffline: Bool = false) {
         sessionApp = appID
         sessionMarked = false
-        let offline = enabled && networkDown
+        let offline = enabled && (forceOffline || networkDown)
         if offline { setenv("MADEIRA_DOCK_OFFLINE", "1", 1) } else { unsetenv("MADEIRA_DOCK_OFFLINE") }
         SteamLog.event("[dock-offline] enabled=\(enabled ? 1 : 0) network=\(networkDown ? "down" : "up") request=\(offline ? 1 : 0) account-saved=\(accountSaved != nil ? 1 : 0) game-started-online=\(verified(appID) != nil ? 1 : 0)")
     }

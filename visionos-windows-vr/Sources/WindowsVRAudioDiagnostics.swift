@@ -10,11 +10,25 @@ enum WindowsVRAudioDiagnostics {
     private static let recovery = WindowsVRAudioRecoveryCoordinator(
         runtimeIsRunning: { runtimeIsRunning() },
         canRecover: { UIApplication.shared.applicationState != .background },
-        activate: { try AVAudioSession.sharedInstance().setActive(true) },
+        activate: {
+            try configureSpatialExperience(immersive: immersiveAudio)
+            try AVAudioSession.sharedInstance().setActive(true)
+        },
         restart: {
             await Task.detached(priority: .userInitiated) { wvr_audio_output_reset_v1() }.value
         },
         report: { snapshot($0) })
+
+    private static var immersiveAudio = false
+
+    static func configureSpatialExperience(immersive: Bool) throws {
+        let audio = AVAudioSession.sharedInstance()
+        if immersive { try audio.setIntendedSpatialExperience(.bypassed) }
+        else {
+            try audio.setIntendedSpatialExperience(.headTracked(soundStageSize: .automatic, anchoringStrategy: .automatic))
+        }
+        immersiveAudio = immersive
+    }
 
     static func start(runtimeIsRunning: @escaping @MainActor () -> Bool) {
         self.runtimeIsRunning = runtimeIsRunning

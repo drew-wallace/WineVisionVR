@@ -1,0 +1,29 @@
+diff --git a/DrvOpenXR/XrBackend.cpp b/DrvOpenXR/XrBackend.cpp
+--- a/DrvOpenXR/XrBackend.cpp
++++ b/DrvOpenXR/XrBackend.cpp
+@@ -43,6 +43,7 @@
+ #include <algorithm>
+ #include <chrono>
+ #include <cinttypes>
++#include <cstring>
+ #include <mutex>
+ 
+ using namespace vr;
+@@ -562,6 +563,17 @@
+ 
+ IBackend::openvr_enum_t XrBackend::SetSkyboxOverride(const vr::Texture_t* pTextures, uint32_t unTextureCount)
+ {
++	// WineVision currently accepts projection layers only. Reject this optional
++	// loading-screen request before changing frame state or copying textures:
++	// its quad layer cannot be presented, and compressed/mipmapped skyboxes can
++	// otherwise trigger a fatal swapchain error dialog invisible inside VR.
++	XrInstanceProperties runtime{ XR_TYPE_INSTANCE_PROPERTIES };
++	if (XR_SUCCEEDED(xrGetInstanceProperties(xr_instance, &runtime)) &&
++	    std::strcmp(runtime.runtimeName, "WineVision VR") == 0) {
++		OOVR_LOG_ONCE("Skybox override unavailable on projection-only WineVision VR; returning RequestFailed");
++		return vr::IVRCompositor_018::VRCompositorError_RequestFailed;
++	}
++
+ 	// Needed for rFactor2 loading screens
+ 	if (unTextureCount && pTextures) {
+ 		CheckOrInitCompositors(pTextures);

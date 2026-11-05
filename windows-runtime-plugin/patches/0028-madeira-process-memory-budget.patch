@@ -1,0 +1,29 @@
+--- a/wine/dlls/ntdll/unix/system.c
++++ b/wine/dlls/ntdll/unix/system.c
+@@ -2630,6 +2630,26 @@
+     }
+ #endif
+ 
++#ifdef WINE_IOS
++    {
++        SYSTEM_BASIC_INFORMATION basic;
++        extern size_t os_proc_available_memory( void );
++        unsigned long long headroom = os_proc_available_memory();
++        unsigned long long process_total;
++
++        virtual_get_system_info( &basic, FALSE );
++        process_total = (unsigned long long)basic.MmNumberOfPhysicalPages * basic.PageSize;
++        if (process_total && process_total < totalram) totalram = process_total;
++        /* Device-wide free pages do not describe how much this app may use.
++         * A zero headroom is valid when the app has reached its limit.
++         * Reject an unlimited-process sentinel by bounding it to physical RAM. */
++        if (headroom <= totalram && headroom < freeram) freeram = headroom;
++        if (freeram > totalram) freeram = totalram;
++        /* The device's swap belongs to the OS, not this app's commit budget. */
++        totalswap = freeswap = 0;
++    }
++#endif
++
+     /* Titan Quest refuses to run if TotalPageFile <= TotalPhys */
+     if (!totalswap) totalswap = page_size;
+ 

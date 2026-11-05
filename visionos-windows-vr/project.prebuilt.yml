@@ -5,7 +5,7 @@ options:
     visionOS: "27.0"
 settings:
   base:
-    CURRENT_PROJECT_VERSION: "64"
+    CURRENT_PROJECT_VERSION: "77"
     MARKETING_VERSION: "0.1.0"
 packages:
   WindowsVRCore:
@@ -62,6 +62,7 @@ targets:
         LSSupportsOpeningDocumentsInPlace: true
         # Game audio must continue when visionOS backgrounds an out-of-view window.
         UIBackgroundModes: [audio]
+        NSMicrophoneUsageDescription: Allows Windows games to use your microphone for in-game voice chat.
         NSBluetoothAlwaysUsageDescription: Connects to your Steam Controller so its buttons, sticks and triggers can control Windows games.
         GCSupportsControllerUserInteraction: true
         GCSupportedGameControllers:
@@ -154,6 +155,8 @@ targets:
       - sdk: MetalFX.framework
       - sdk: CoreML.framework
       - sdk: CoreVideo.framework
+      - sdk: CoreMedia.framework
+      - sdk: VideoToolbox.framework
     sources:
       - path: ../windows-vr-native/third-party/fidelityfx/gpu/fsr3upscaler/msl
         buildPhase: sources

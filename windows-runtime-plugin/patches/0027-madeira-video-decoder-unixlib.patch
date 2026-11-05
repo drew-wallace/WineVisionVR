@@ -1,0 +1,18 @@
+--- a/build/ntdll-unix/virtual_ios.c
++++ b/build/ntdll-unix/virtual_ios.c
+@@ -9566,6 +9566,15 @@
+             libname = "dwrite (rev=ml494)";
+             funcs64 = (const void *)dwrite_unix_call_funcs;
+             funcs_wow64 = (const void *)dwrite_unix_call_wow64_funcs;
++        } else if (match && !strcmp(match, "amfrt64.dll")) {
++            /* WineVision's packaged AMF adapter has an independent, versioned
++             * H.264 unix ABI. No existing unix table indices are repurposed.
++             * A missing host implementation and all 32-bit callers fail closed. */
++            typedef const void *const *(*video_table_fn)(unsigned int, unsigned int);
++            video_table_fn get_table = (video_table_fn)dlsym(RTLD_DEFAULT, "wvr_video_unix_call_table_v1");
++            libname = "WineVision H.264 ABI 1";
++            funcs64 = get_table ? get_table(1, 5) : NULL;
++            funcs_wow64 = NULL;
+         } else if (match && strstr(match, "winegstreamer") && (wow || ios_wg_64bit_opted_in())) {
+             /* MADEIRA 2026-09-19: matched before the generic fallback so the
+              * DLL loads at all.  Upstream binds "winegstreamer.so"; the PE

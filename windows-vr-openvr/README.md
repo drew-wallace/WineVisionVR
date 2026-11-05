@@ -94,6 +94,28 @@ proprietary content.
 
 ## Runtime status
 
+The current WineVision OpenXR runtime accepts projection layers only.
+OpenComposite patch 0012 returns OpenVR `RequestFailed` for its optional skybox
+override on that runtime, before changing frame state or uploading textures.
+This prevents unsupported loading-screen textures from opening a blocking
+error dialog inside an immersive session. It does not implement skybox/quad
+presentation; normal eye submissions continue through the existing path.
+Other OpenXR runtime names retain upstream skybox handling. The production
+entry-point regression can be run with
+`python3 windows-vr-openvr/tests/test_skybox_error.py PATCHED_SOURCE --generated OPENCOMPOSITE_BUILD`.
+Patch 0013 applies the same policy to texture, raw-buffer and file overlay
+uploads, preserving handle validation and returning `RequestFailed` before
+graphics work. Layer assembly retains only the scene projection and does not
+route input into an unpresented overlay. Run its production-entry regression
+with `python3 windows-vr-openvr/tests/test_overlay_errors.py PATCHED_SOURCE --generated OPENCOMPOSITE_BUILD`.
+
+Patch 0014 scales oversized stereo submissions to the WineVision runtime's
+recommended eye dimensions using the existing crop shader. The entire eye
+image is sampled, including when the game submits full-texture bounds. Smaller
+textures and other runtimes retain their existing sizing. Run
+`python3 windows-vr-openvr/tests/test_stereo_extent.py PATCHED_SOURCE` to check
+normalization and UV handling under AddressSanitizer and UndefinedBehaviorSanitizer.
+
 This package is a compatibility bridge, not a Windows execution environment.
 It does not include Wine/FEX binaries, a Windows OpenXR runtime, or proprietary
 games. Actual Windows VR game execution depends on the separate Wine/FEX process

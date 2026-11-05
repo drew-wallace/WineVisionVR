@@ -53,6 +53,8 @@ final class LauncherModel {
     private(set) var requiresRestart = false
     private(set) var runtimeStatus = L("No runtime session", "Keine Laufzeitsitzung")
     private(set) var launchError: String?
+    private(set) var lowMemoryWarning = false
+    @ObservationIgnored private var memoryWarningSpeech: AVSpeechSynthesizer?
     private(set) var library: [WindowsVRLibraryEntry] = []
     private(set) var selectedLibraryEntryID: String?
     private(set) var selectedProfileID: String?
@@ -81,7 +83,7 @@ final class LauncherModel {
     private var diagnosticsAttemptActive = false
     private var diagnosticsNativeState: Int32?
     private var gameDirectoryAccessURL: URL?
-    private var immersiveSpaceIsOpen = false
+    private(set) var immersiveSpaceIsOpen = false
     private var immersiveSpaceClosedDuringLaunch = false
     private var statusMonitor: Task<Void, Never>?
     private var warmupMonitor: Task<Void, Never>?
@@ -731,7 +733,10 @@ final class LauncherModel {
     /// Keep routine graphics logging inexpensive. Explicit DXMT overrides remain
     /// available for shader diagnosis without flooding the normal frame loop.
     private static func configureGraphicsEnvironment() {
+        wvr_video_reset_all_v1()
         WindowsVRTranslationEnvironment.applyDefaults()
+        let sharedResourcePorts = wvr_shared_resource_ports_install_v1()
+        launchLog.notice("Shared-resource port registry installed=\(sharedResourcePorts != 0)")
         let guestFoveation = wvr_guest_foveation_install_v1()
         launchLog.notice("Guest foveation transport installed=\(guestFoveation != 0)")
         #if DEBUG
@@ -749,7 +754,7 @@ final class LauncherModel {
         }
     }
 
-    private static func configureAudioEnvironment() throws {
+    private static func configureAudioEnvironment(microphone: Bool, immersive: Bool) throws {
         WindowsVRAudioDiagnostics.start { wine_process_is_running() != 0 }
         // The JIT helper uses a background audio session. Both the host and
         // the preserved runtime's legacy activation must allow it to continue.
@@ -760,9 +765,15 @@ final class LauncherModel {
         }
         if getenv("MADEIRA_AUDIO_LEAD_MS") == nil { setenv("MADEIRA_AUDIO_LEAD_MS", "90", 0) }
         let audio = AVAudioSession.sharedInstance()
-        try audio.setCategory(.playback, options: .mixWithOthers)
+        wvr_audio_capture_set_authorized_v1(0)
+        try audio.setCategory(microphone ? .playAndRecord : .playback, options: .mixWithOthers)
+        // VR games already render their listener-relative mix from the tracked
+        // head pose. Window anchoring would spatialize that mix a second time.
+        try WindowsVRAudioDiagnostics.configureSpatialExperience(immersive: immersive)
         try audio.setPreferredSampleRate(48_000)
         try audio.setActive(true)
+        wvr_audio_capture_set_authorized_v1(microphone && audio.isInputAvailable ? 1 : 0)
+        launchLog.notice("Microphone: authorized=\(microphone) inputAvailable=\(audio.isInputAvailable) captureEnabled=\(wvr_audio_capture_is_authorized_v1() != 0)")
         launchLog.notice("Audio session: mixing enabled; actual rate=\(audio.sampleRate)Hz output latency=\(audio.outputLatency)s")
         WindowsVRAudioDiagnostics.snapshot("activated")
     }
@@ -781,7 +792,7 @@ final class LauncherModel {
         launchLog.notice("Guest display layer registered (\(Int(layer.drawableSize.width))x\(Int(layer.drawableSize.height)))")
     }
 
-    func launch(preparePresentation: () async throws -> Void) async {
+    func launch(offline: Bool = false, preparePresentation: () async throws -> Void) async {
         guard canLaunch, let gameDirectory else { return }
         do {
             if let manifest { restoreSteamSelection(for: manifest) }
@@ -796,6 +807,10 @@ final class LauncherModel {
             launchError = nil
             defer { isLaunching = false }
             guard runtime.isAvailable else { throw LauncherFailure.runtimePluginMissing }
+            if let selection = launchSelection, selection.game.id == 457550 {
+                try BigscreenVideoCompatibility.prepare(game: selection.game, drive: MadeiraDock.drive)
+                launchLog.notice("Bigscreen VideoToolbox streaming adapter prepared before launch")
+            }
             if let selection = launchSelection, selection.game.id == RiskOfRain2HealthBarRepair.appID {
                 try await RiskOfRain2HealthBarRepair.prepare(game: selection.game, drive: MadeiraDock.drive)
                 launchLog.notice("Risk of Rain 2 health-bar repair prepared before launch")
@@ -879,14 +894,17 @@ final class LauncherModel {
                     throw DockError.message("Select an installed Steam game and sign in again before launching.")
                 }
                 try MadeiraDock.validate(selection.game, drive: MadeiraDock.drive)
+                let useOffline: Bool
                 if LaunchDiagnostics.automatedLaunchEnabled,
                    ProcessInfo.processInfo.environment["WVR_STEAM_SOCIAL_PROBE"] == "1" {
                     launchLog.notice("Steam social diagnostic: login only; game and cloud sync skipped")
+                    useOffline = false
                 } else {
-                    try await SteamLibraryModel.shared.prepareGameServices(appID: selection.game.id, option: selection.option)
+                    useOffline = try await SteamLibraryModel.shared.prepareGameServices(
+                        appID: selection.game.id, option: selection.option, offline: offline)
                 }
                 try MadeiraDock.writeHandoff(account: credentials.accountName, token: credentials.refreshToken, appID: selection.game.id)
-                MadeiraDock.configure(selection.game, launchOption: selection.option)
+                MadeiraDock.configure(selection.game, launchOption: selection.option, offline: useOffline)
             }
             // WindowsVRCore emits only the unchanged v1 plugin JSON request.
             launchLog.notice("Launch: starting runtime")
@@ -898,7 +916,16 @@ final class LauncherModel {
                 _ = wvr_trace_thread_creation_v1("WindowsRuntimePlugin", documents.appendingPathComponent("launcher-log.txt").path)
             }
             Self.configureGraphicsEnvironment()
-            try Self.configureAudioEnvironment()
+            let needsMicrophone = launchSelection?.game.id == 457550 ||
+                (LaunchDiagnostics.automatedLaunchEnabled && ProcessInfo.processInfo.environment["WVR_MICROPHONE_PROBE"] == "1")
+            if launchSelection?.game.id == 457550,
+               Bundle.main.object(forInfoDictionaryKey: "WVRGuestMemoryDiagnostics") as? String == "enabled" {
+                setenv("WVR_GUEST_MEMORY_OWNERS", "1", 1)
+            }
+            var microphoneGranted = false
+            if needsMicrophone { microphoneGranted = await AVAudioApplication.requestRecordPermission() }
+            try Task.checkCancellation()
+            try Self.configureAudioEnvironment(microphone: microphoneGranted, immersive: launchManifest.presentation == .immersiveVR)
             if launchManifest.id == "steam.shared" && launchManifest.presentation == .immersiveVR {
                 let architecture = launchManifest.guestArchitecture == .x86
                     ? "x86" : (runtime.guestRuntimeArchitecture ?? "x64")
@@ -913,15 +940,7 @@ final class LauncherModel {
             beginStatusMonitoring()
             beginShaderWarmupMonitoring(manifest: launchManifest, gameDirectory: gameDirectory)
             if launchManifest.presentation == .immersiveVR && (!immersiveSpaceIsOpen || immersiveSpaceClosedDuringLaunch) {
-                try await runtime.stop()
-                await SteamLibraryModel.shared.finishGameServices()
-                finishTestSession(outcome: .stopped, reason: "Stop confirmed after immersive presentation closed during launch")
-                hasAcceptedLaunch = false
-                requiresRestart = true
-                statusMonitor?.cancel()
-                statusMonitor = nil
-                releaseGameDirectoryAccess()
-                runtimeStatus = L("Runtime stopped; restart the app before another launch", "Laufzeit beendet; starte die App neu, bevor du ein weiteres Spiel startest")
+                runtimeStatus = L("Game session active; open WineVision to return", "Spielsitzung aktiv; öffne WineVision, um zurückzukehren")
             }
         } catch {
             launchLog.error("Launch failed (accepted=\(self.hasAcceptedLaunch)): \(String(describing: error)); native=\(self.runtime.nativeStatus().lastError ?? "")")
@@ -1130,23 +1149,15 @@ final class LauncherModel {
         immersiveSpaceIsOpen = false
         if isLaunching { immersiveSpaceClosedDuringLaunch = true }
         guard presentationModeDraft == .immersiveVR, hasAcceptedLaunch, !isStopping, !stopRequested else { return }
-        snapshotTestSession(reason: "Immersive presentation closed; requesting native stop")
-        isStopping = true
-        defer { isStopping = false }
-        do {
-            try await runtime.stop()
-            await SteamLibraryModel.shared.finishGameServices()
-            finishTestSession(outcome: .stopped, reason: "Native stop confirmed after immersive presentation closed")
-            hasAcceptedLaunch = false
-            requiresRestart = true
-            runtimeStatus = L("Runtime stopped; restart the app before another launch", "Laufzeit beendet; starte die App neu, bevor du ein weiteres Spiel startest")
-            statusMonitor?.cancel()
-            statusMonitor = nil
-            releaseGameDirectoryAccess()
-        } catch {
-            requiresRestart = true
-            recordStopFailure(error, becauseImmersiveClosed: true)
-        }
+        // Going Home dismisses presentation, not the guest's one-shot runtime.
+        // The renderer pauses targets/tracking until a new space is opened.
+        snapshotTestSession(reason: "Immersive presentation closed; preserving game session for re-entry")
+        runtimeStatus = L("Game session active; open WineVision to return", "Spielsitzung aktiv; öffne WineVision, um zurückzukehren")
+    }
+
+    var canReturnToImmersiveGame: Bool {
+        presentationModeDraft == .immersiveVR && hasAcceptedLaunch &&
+            !isLaunching && !isStopping && !stopRequested && !requiresRestart
     }
 
     func stop() async {
@@ -1545,9 +1556,15 @@ final class LauncherModel {
 
     private func beginStatusMonitoring() {
         statusMonitor?.cancel()
+        lowMemoryWarning = false
         statusMonitor = Task { [weak self] in
+            defer {
+                if !Task.isCancelled { self?.lowMemoryWarning = false }
+            }
             while !Task.isCancelled, let self, self.hasAcceptedLaunch {
                 self.refreshRuntimeStatus()
+                if self.hasAcceptedLaunch { self.checkMemoryHeadroom() }
+                else { self.lowMemoryWarning = false }
                 self.refreshCompositorCounters()
                 var shaderError = [CChar](repeating: 0, count: 1024)
                 if !self.compilerFailureHandled,
@@ -1564,6 +1581,29 @@ final class LauncherModel {
                 try? await Task.sleep(for: .milliseconds(250))
             }
         }
+    }
+
+    private func checkMemoryHeadroom() {
+#if !targetEnvironment(simulator)
+        let available = os_proc_available_memory()
+        let mib = 1024 * 1024
+        if lowMemoryWarning {
+            if available >= 1024 * mib { lowMemoryWarning = false }
+            return
+        }
+        // For this running app, zero also covers an exhausted process budget.
+        guard available <= 512 * mib else { return }
+        lowMemoryWarning = true
+        launchLog.notice("Low memory during gameplay; availableProcessMemoryBytes=\(available)")
+        if presentationModeDraft == .immersiveVR {
+            let speech = memoryWarningSpeech ?? AVSpeechSynthesizer()
+            memoryWarningSpeech = speech
+            speech.speak(AVSpeechUtterance(string: L(
+                "WineVision is running low on memory. Save your progress now if you can.",
+                "WineVision hat wenig freien Speicher. Speichere jetzt, wenn möglich."
+            )))
+        }
+#endif
     }
 
     private func refreshRuntimeStatus() {

@@ -6,8 +6,11 @@ import Darwin
 struct ContentView: View {
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
+    @Environment(\.dismissWindow) private var dismissWindow
+    @Environment(\.scenePhase) private var scenePhase
     @Bindable var model: LauncherModel
     @ObservedObject private var steamServices = SteamLibraryModel.shared
+    @AppStorage("WVRHideWindowByDefault") private var hideWindowByDefault = true
     @AppStorage("WVRPerformanceDiagnostics") private var performanceDiagnostics = false
     @AppStorage("WVRFrameSynthesisMode") private var frameSynthesisMode = 4
     @AppStorage("WVRReconstructionValidation") private var reconstructionValidation = false
@@ -21,6 +24,7 @@ struct ContentView: View {
     @State private var exportFilename = "winevision-test-sessions.json"
     @State private var showingSteamLibrary = false
     @State private var didStartDesktopSmokeTest = false
+    @State private var isReturningToGame = false
     @State private var reportDocument = CompatibilityReportDocument(data: Data())
 
     var body: some View {
@@ -33,12 +37,31 @@ struct ContentView: View {
                         .navigationTitle("WineVision VR")
                         .toolbar {
                             ToolbarItem(placement: .topBarTrailing) {
+                                Menu {
+                                    Toggle(L("Hide window by default", "Fenster standardmäßig ausblenden"),
+                                           isOn: $hideWindowByDefault)
+                                } label: {
+                                    Label(L("Settings", "Einstellungen"), systemImage: "gearshape")
+                                }
+                            }
+                            ToolbarItem(placement: .topBarTrailing) {
                                 Button(L("Export test sessions", "Testsitzungen exportieren"), systemImage: "square.and.arrow.up") {
                                     exportTestSessions()
                                 }
                             }
                         }
                 }
+            }
+        }
+        .overlay(alignment: .top) {
+            if model.hasAcceptedLaunch && model.lowMemoryWarning {
+                Label(L("WineVision is running low on memory. Save your progress if you can.",
+                        "WineVision hat wenig freien Speicher. Speichere, wenn möglich."),
+                      systemImage: "exclamationmark.triangle.fill")
+                    .padding()
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                    .padding()
+                    .allowsHitTesting(false)
             }
         }
         .ornament(visibility: model.shaderWarmup == nil ? .hidden : .visible, attachmentAnchor: .scene(.bottom)) {
@@ -59,9 +82,15 @@ struct ContentView: View {
         .onChange(of: model.canChangeSelection) { _, allowed in
             SteamLibraryModel.shared.runtimeBusy = !allowed
         }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active && model.canReturnToImmersiveGame {
+                Task { await returnToGame() }
+            }
+        }
         .task {
             model.recoverAngleTrialIfIdle()
             model.refreshTransferredGames()
+            if scenePhase == .active && model.canReturnToImmersiveGame { await returnToGame() }
             // Explicit developer launch argument for repeatable device testing.
             // The normal app/library launch remains user driven.
             if LaunchDiagnostics.automatedLaunchEnabled,
@@ -211,12 +240,19 @@ struct ContentView: View {
                         }
                         .pickerStyle(.segmented)
                         .disabled(!model.canChangeSelection)
-                        Button { Task { await startLaunch() } } label: {
+                        Button {
+                            Task {
+                                if model.canReturnToImmersiveGame { await returnToGame(hideMenu: hideWindowByDefault) }
+                                else { await startLaunch() }
+                            }
+                        } label: {
                             HStack {
                                 Spacer()
-                                if model.isLaunching {
+                                if model.isLaunching || isReturningToGame {
                                     ProgressView()
                                     Text(L("Starting…", "Wird gestartet …"))
+                                } else if model.canReturnToImmersiveGame {
+                                    Label(L("Return to game", "Zurück zum Spiel"), systemImage: "vision.pro")
                                 } else {
                                     Label(L("Play", "Spielen"), systemImage: "play.fill")
                                 }
@@ -225,8 +261,26 @@ struct ContentView: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.large)
-                        .disabled(!model.canLaunch)
+                        .disabled((!model.canLaunch && !model.canReturnToImmersiveGame) || isReturningToGame)
+                        if model.selectedSteamAppID != nil && !model.hasAcceptedLaunch {
+                            Button(L("Play without Steam", "Ohne Steam spielen"), systemImage: "wifi.slash") {
+                                Task { await startLaunch(offline: true) }
+                            }.disabled(!model.canLaunch)
+                            Text(L("Uses local saves and Steam’s saved offline sign-in. Online games may require a connection.",
+                                   "Verwendet lokale Spielstände und Steams gespeicherte Offline-Anmeldung. Online-Spiele benötigen eventuell eine Verbindung."))
+                                .font(.footnote).foregroundStyle(.secondary)
+                            if model.launchError != nil {
+                                Button(L("Retry Steam and play", "Steam erneut verbinden und spielen"), systemImage: "arrow.clockwise") {
+                                    Task { await startLaunch() }
+                                }.disabled(!model.canLaunch)
+                            }
+                        }
                         if model.hasAcceptedLaunch {
+                            if model.canReturnToImmersiveGame {
+                                Text(L("Go Home and open WineVision to bring this menu back.",
+                                       "Gehe zu Home und öffne WineVision, um dieses Menü wieder einzublenden."))
+                                    .font(.footnote).foregroundStyle(.secondary)
+                            }
                             Button(role: .destructive) { Task { await model.stop() } } label: {
                                 Label(model.isStopping ? L("Stopping…", "Wird beendet …") : L("End session", "Sitzung beenden"), systemImage: "stop.fill")
                             }.disabled(model.isStopping || model.stopRequested)
@@ -575,9 +629,10 @@ struct ContentView: View {
     }
 
     @MainActor
-    private func startLaunch() async {
+    private func startLaunch(offline: Bool = false) async {
+        guard model.canLaunch else { return }
         let presentation = model.presentationModeDraft
-        await model.launch {
+        await model.launch(offline: offline) {
             if presentation == .desktop {
                 model.showDesktopPresentation()
                 try await model.waitForDesktopReady()
@@ -595,7 +650,30 @@ struct ContentView: View {
                 model.recordLifecycleEvent("dismissImmersiveSpace: launch returned without accepted session")
                 await dismissImmersiveSpace()
             }
+        } else if presentation == .immersiveVR && model.immersiveSpaceIsOpen && hideWindowByDefault {
+            dismissWindow(id: VisionOSWindowsVRApp.menuWindowID)
         }
+    }
+
+    @MainActor
+    private func returnToGame(hideMenu: Bool = false) async {
+        guard model.canReturnToImmersiveGame, !isReturningToGame else { return }
+        isReturningToGame = true
+        defer { isReturningToGame = false }
+        if !model.immersiveSpaceIsOpen {
+            guard case .opened = await openImmersiveSpace(id: WindowsVRCompositorScene.identifier) else {
+                model.presentLibraryError(LaunchPreparationFailure.immersiveSpaceUnavailable)
+                return
+            }
+            model.immersiveSpaceDidOpen()
+            do { try await model.waitForCompositorReady() }
+            catch {
+                await dismissImmersiveSpace()
+                model.presentLibraryError(error)
+                return
+            }
+        }
+        if hideMenu { dismissWindow(id: VisionOSWindowsVRApp.menuWindowID) }
     }
 }
 
@@ -634,7 +712,7 @@ private struct ShaderWarmupBanner: View {
 private enum LaunchPreparationFailure: LocalizedError {
     case immersiveSpaceUnavailable
     var errorDescription: String? {
-        L("The immersive compositor window could not be opened, so no launch request was sent.", "Das immersive Compositor-Fenster konnte nicht geöffnet werden. Es wurde keine Startanfrage gesendet.")
+        L("The immersive game view could not be opened. Try again from the WineVision menu.", "Die immersive Spielansicht konnte nicht geöffnet werden. Versuche es erneut im WineVision-Menü.")
     }
 }
 

@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct VisionOSWindowsVRApp: App {
+    static let menuWindowID = "WineVisionMenu"
     @UIApplicationDelegateAdaptor(WineVisionApplicationDelegate.self) private var applicationDelegate
     @State private var launcherModel = LauncherModel()
     @Environment(\.scenePhase) private var scenePhase
@@ -18,7 +19,7 @@ struct VisionOSWindowsVRApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: Self.menuWindowID) {
             ContentView(model: launcherModel)
                 .onChange(of: scenePhase, initial: true) { _, phase in
                     SteamLibraryModel.shared.applicationActivityChanged(phase == .active)
@@ -26,7 +27,9 @@ struct VisionOSWindowsVRApp: App {
                 }
         }
         .windowStyle(.automatic)
+        .defaultLaunchBehavior(.presented)
 
         WindowsVRCompositorScene(model: launcherModel)
+            .defaultLaunchBehavior(.suppressed)
     }
 }

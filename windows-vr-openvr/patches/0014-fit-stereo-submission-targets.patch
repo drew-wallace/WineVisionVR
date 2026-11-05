@@ -1,0 +1,77 @@
+diff --git a/OpenOVR/Compositor/dx11compositor.cpp b/OpenOVR/Compositor/dx11compositor.cpp
+--- a/OpenOVR/Compositor/dx11compositor.cpp
++++ b/OpenOVR/Compositor/dx11compositor.cpp
+@@ -4,6 +4,8 @@
+ 
+ #include "dx11compositor.h"
+ #include "WVRTextureBounds.h"
++#include "WVRTextureExtent.h"
++#include "../Misc/WVRProjectionLayers.h"
+ 
+ #include "../Misc/Config.h"
+ #include "../Misc/xr_ext.h"
+@@ -450,6 +452,15 @@
+ 		srcDesc.Height = srcDesc.Width = std::min(srcDesc.Height, srcDesc.Width);
+ 	}
+ 
++	resampleToTarget = false;
++	if (!cube && WVRIsProjectionOnlyRuntime(xr_instance)) {
++		const auto& left = xr_main_view(XruEyeLeft);
++		const auto& right = xr_main_view(XruEyeRight);
++		resampleToTarget = WVRFitTextureExtent(srcDesc.Width, srcDesc.Height,
++		    std::min(left.recommendedImageRectWidth, right.recommendedImageRectWidth),
++		    std::min(left.recommendedImageRectHeight, right.recommendedImageRectHeight));
++	}
++
+ 	bool usable = chain != NULL && CheckChainCompatible(srcDesc, texture->eColorSpace) &&
+ 	    WVRSameSourceShape(sourceShape, fullSource);
+ 
+@@ -624,10 +635,12 @@
+ 
+ 	// The base compositor passes bounds here when this path owns the crop.
+ 	// Apply eye selection and vertical inversion in one sample operation.
+-	if (bounds && !swapchain_rtvs.empty()) {
++	if ((bounds || resampleToTarget) && !swapchain_rtvs.empty()) {
++		const vr::VRTextureBounds_t fullBounds{0, 0, 1, 1};
++		const auto& sampleBounds = bounds ? *bounds : fullBounds;
+ 		WVRBoundsUniform uv{};
+-		OOVR_FALSE_ABORT(WVRMakeBoundsUniform(bounds->uMin, bounds->uMax,
+-		    bounds->vMin, bounds->vMax, uv));
++		OOVR_FALSE_ABORT(WVRMakeBoundsUniform(sampleBounds.uMin, sampleBounds.uMax,
++		    sampleBounds.vMin, sampleBounds.vMax, uv));
+ 		ID3D11Texture2D* sampleTexture = src;
+ 		const UINT eyeSlice = srcDesc.ArraySize > 1 && eye.has_value() ? static_cast<UINT>(*eye) : 0;
+ 		if (srcDesc.SampleDesc.Count > 1 || srcDesc.ArraySize > 1) {
+diff --git a/OpenOVR/Compositor/dx11compositor.h b/OpenOVR/Compositor/dx11compositor.h
+--- a/OpenOVR/Compositor/dx11compositor.h
++++ b/OpenOVR/Compositor/dx11compositor.h
+@@ -24,6 +24,7 @@
+ 	ID3D11DeviceContext* boundsContext = nullptr;
+ 	ID3D11Buffer* boundsUniform = nullptr;
+ 	D3D11_TEXTURE2D_DESC sourceShape{};
++	bool resampleToTarget = false;
+ 	void CheckCreateSwapChain(const vr::Texture_t* texture, const vr::VRTextureBounds_t* bounds, bool cube);
+ 
+ 	void ThrowIfFailed(HRESULT test);
+diff --git a/OpenOVR/Compositor/WVRTextureExtent.h b/OpenOVR/Compositor/WVRTextureExtent.h
+new file mode 100644
+--- /dev/null
++++ b/OpenOVR/Compositor/WVRTextureExtent.h
+@@ -0,0 +1,17 @@
++#pragma once
++#include <algorithm>
++#include <cstdint>
++
++// Keep the full source UV range; only the output allocation/viewport shrinks.
++// This runtime can upscale smaller submissions but rejects oversized images.
++inline bool WVRFitTextureExtent(uint32_t& width, uint32_t& height,
++                                uint32_t maximumWidth, uint32_t maximumHeight)
++{
++    if (!width || !height || !maximumWidth || !maximumHeight) return false;
++    const uint32_t fittedWidth = std::min(width, maximumWidth);
++    const uint32_t fittedHeight = std::min(height, maximumHeight);
++    const bool resample = fittedWidth != width || fittedHeight != height;
++    width = fittedWidth;
++    height = fittedHeight;
++    return resample;
++}

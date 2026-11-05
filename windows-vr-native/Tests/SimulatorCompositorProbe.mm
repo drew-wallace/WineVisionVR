@@ -5,6 +5,9 @@
 #include "WindowsVRCompositorBridge.h"
 #include <cstdio>
 #include <cstdlib>
+#include <atomic>
+#include <thread>
+#include <chrono>
 static void require(bool value, const char *message) {
     if (!value) { std::fprintf(stderr, "FAIL: %s\n", message); std::exit(1); }
     std::printf("PASS: %s\n", message);
@@ -119,6 +122,86 @@ int main() { @autoreleasepool {
     renderPose.structSize=sizeof(renderPose);
     require(wvr_compositor_copy_lease_tracking_v1(arrayAcquired.lease,&renderPose)==WVRCompositorStatusNoFrameAvailable, "missing render pose is not fabricated from latest tracking");
     wvr_compositor_release_acquired_frame_v1(arrayAcquired.lease);
+    // Mirror DXMT ordering: submit to the native bridge BEFORE committing that
+    // frame's command buffer, with three reusable resources waiting for their
+    // prior consumer tickets. A producer may wait, the display must never wait.
+    id<MTLSharedEvent> gate=[device newSharedEvent], delayedReady=[device newSharedEvent];
+    id<MTLSharedEvent> consumed=(__bridge_transfer id<MTLSharedEvent>)wvr_compositor_copy_consumer_event_v1();
+    std::atomic<unsigned> produced{0}; std::atomic<bool> producerDone{false};
+    std::atomic<int32_t> producerStatus{0};
+    std::thread producer([&] { @autoreleasepool {
+        uint64_t tickets[18]={};
+        for(unsigned index=0;index<18;++index) {
+            id<MTLCommandBuffer> work=[queue commandBuffer];
+            if(index<3) [work encodeWaitForEvent:gate value:1];
+            else [work encodeWaitForEvent:consumed value:tickets[index-3]];
+            [work encodeSignalEvent:delayedReady value:index+1];
+            WVRSubmitStereoFrameV2 item=arrayFrame;
+            item.producerReadyEvent=(__bridge void*)delayedReady;
+            item.producerReadyValue=index+1;item.producerFrameID=100+index;
+            int32_t status=wvr_compositor_submit_stereo_frame_v2(&item,&tickets[index]);
+            if(status) {producerStatus=status;break;}
+            [work commit]; produced.fetch_add(1);
+        }
+        producerDone=true;
+    }});
+    auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+    while(produced.load()<3 && std::chrono::steady_clock::now()<deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    bool preservedPending=produced.load()==3;
+    gate.signaledValue=1;
+    void *held=nullptr;uint64_t latest=0;
+    deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+    while(std::chrono::steady_clock::now()<deadline && latest!=117) {
+        WVRAcquiredStereoFrameV2 next={};next.structSize=sizeof(next);
+        if(wvr_compositor_acquire_latest_stereo_frame_v2(&next)==0) {
+            if(held)wvr_compositor_release_acquired_frame_v1(held);
+            held=next.lease;latest=next.producerFrameID;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if(held)wvr_compositor_release_acquired_frame_v1(held);
+    if(!producerDone.load())wvr_compositor_pause_v1();
+    producer.join();
+    require(preservedPending,"full pending queue applies producer backpressure instead of discarding every unfinished frame");
+    require(producerStatus.load()==0 && produced.load()==18 && latest==117,"GPU producer and display progress with commit-after-submit and held frame leases");
+
+    // Pause/exit must release a producer waiting on a full unfinished queue.
+    delayedReady=[device newSharedEvent];
+    arrayFrame.producerReadyEvent=(__bridge void*)delayedReady;arrayFrame.producerReadyValue=1;
+    for(unsigned index=0;index<3;++index)
+        require(wvr_compositor_submit_stereo_frame_v2(&arrayFrame,&ticket)==0,"fill pending queue for pause cancellation");
+    std::atomic<bool> cancelledDone{false};std::atomic<int32_t> cancelledStatus{0};
+    std::thread cancelled([&] { @autoreleasepool {
+        uint64_t localTicket=0;
+        cancelledStatus=wvr_compositor_submit_stereo_frame_v2(&arrayFrame,&localTicket);
+        cancelledDone=true;
+    }});
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    bool wasWaiting=!cancelledDone.load();wvr_compositor_pause_v1();cancelled.join();
+    require(wasWaiting && cancelledStatus.load()==WVRCompositorStatusNoFrameAvailable,"pause cancels pending producer without publishing a stale frame");
+    auto cancelPendingProducer=[&](bool exitSession) {
+        require(wvr_compositor_publish_targets_v1(24,24,format,24,24,format)==0,"resume targets for blocked-producer cancellation");
+        WVRRenderTargetInfoV1 current={};current.structSize=sizeof(current);
+        require(wvr_compositor_copy_targets_v1(&current)==0,"read cancellation target generation");
+        id<MTLSharedEvent> unfinished=[device newSharedEvent];
+        auto pending=arrayFrame;pending.targetGeneration=current.generation;
+        pending.producerReadyEvent=(__bridge void*)unfinished;pending.producerReadyValue=1;
+        for(unsigned i=0;i<3;++i)require(wvr_compositor_submit_stereo_frame_v2(&pending,&ticket)==0,"fill cancellation queue");
+        std::atomic<bool> done{false};std::atomic<int32_t> status{0};
+        std::thread waiting([&] { @autoreleasepool {
+            uint64_t ignored=0;status=wvr_compositor_submit_stereo_frame_v2(&pending,&ignored);done=true;
+        }});
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));bool blocked=!done.load();
+        if(exitSession)wvr_compositor_request_session_exit_v1();
+        else require(wvr_compositor_publish_targets_v1(32,32,format,32,32,format)==0,"replace targets during pending submission");
+        waiting.join();
+        require(blocked && status.load()==(exitSession?WVRCompositorStatusNoFrameAvailable:WVRCompositorStatusIncompatibleTexture),
+            exitSession?"session exit cancels pending producer":"target replacement rejects stale pending submission");
+        wvr_compositor_pause_v1();
+    };
+    cancelPendingProducer(false);cancelPendingProducer(true);
     std::puts("SIMULATOR COMPOSITOR CHECKS PASSED");
     return 0;
 } }

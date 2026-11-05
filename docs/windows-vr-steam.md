@@ -25,7 +25,20 @@ launch option. This selects the game in the research launcher; then press
 compositor first. Native downloads pause and their Steam connection logs off
 before Valve's Windows client takes the account. Dock receives its token in a
 protected, single-use file, outside Documents, rather than the manifest or argv.
-The runtime still has one session per app process; restart after session exit.
+The runtime still has one session per app process; restart after ending the
+session. Going Home preserves the running session. **Hide window by default**
+in Settings starts enabled and closes the launcher window when you enter VR
+from the launcher. You can also close it using the visionOS window controls.
+Open WineVision from Home to return to the game and show the window again.
+
+Library refresh and pre-launch Steam services retry transient connection
+failures once automatically. **Retry connection** is available on a library
+error, and **Retry Steam and play** retries a failed launch preparation. After
+both pre-launch connection attempts fail, launch continues offline. **Play
+without Steam** skips that connection wait entirely. Offline launches use local saves
+and disable the guest client's cloud sync for that launch while preserving
+saved cloud preferences. Steam still needs a valid cached offline sign-in and
+license; games requiring online services can still refuse offline play.
 
 Dock is a headless Windows host for Valve's own client libraries. It performs
 Steam launch and license handling, while OpenComposite and the project-owned

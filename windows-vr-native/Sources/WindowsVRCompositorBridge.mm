@@ -238,6 +238,33 @@ void dropHeadLocked(BridgeState &bridge) {
     bridge.stats.queuedFrames = static_cast<uint32_t>(bridge.count);
 }
 
+// Called on a producer thread with bridge.lock held. A full queue must retain
+// pending work until the GPU and display can consume it. Otherwise producers
+// can discard every frame just before its ready event signals, forever.
+// Coalesce only when another ready frame survives dropping the head. Wait on
+// the producer side, never on the display queue, and release the lock so GPU
+// completion, acquisition, pause and target replacement can all progress.
+int32_t makeQueueSpaceLocked(BridgeState &bridge, uint64_t generation) {
+    for (;;) {
+        if (bridge.compositorPaused || bridge.sessionExitRequested)
+            return WVRCompositorStatusNoFrameAvailable;
+        if (bridge.targets.generation != generation)
+            return WVRCompositorStatusIncompatibleTexture;
+        if (bridge.count < kQueueCapacity) {
+            return bridge.nextTicket != 0 &&
+                bridge.nextTicket - bridge.lastSignaledTicket - 1 < kMaxOutstandingTickets
+                ? WVRCompositorStatusOK : WVRCompositorStatusNoFrameAvailable;
+        }
+        if (newestReadyOffsetLocked(bridge) > 0) {
+            dropHeadLocked(bridge);
+            continue;
+        }
+        os_unfair_lock_unlock(&bridge.lock);
+        usleep(1000);
+        os_unfair_lock_lock(&bridge.lock);
+    }
+}
+
 uint32_t producerExtent(uint32_t drawableExtent, float scale) {
     if (drawableExtent == 0) return 0;
     const uint32_t scaled = std::max<uint32_t>(1, static_cast<uint32_t>(
@@ -390,7 +417,11 @@ int32_t submitStereoFrame(const WVRSubmitStereoFrameV1 *frame,
         return WVRCompositorStatusNoFrameAvailable;
     }
 
-    if (bridge.count == kQueueCapacity) dropHeadLocked(bridge);
+    const int32_t spaceStatus = makeQueueSpaceLocked(bridge, bridge.targets.generation);
+    if (spaceStatus != WVRCompositorStatusOK) {
+        os_unfair_lock_unlock(&bridge.lock);
+        return spaceStatus;
+    }
     const size_t tail = (bridge.head + bridge.count) % kQueueCapacity;
     QueuedFrame &slot = bridge.queue[tail];
     slot.ticket = bridge.nextTicket++;
@@ -681,9 +712,13 @@ static int32_t submitStereoFrameV2Impl(const WVRSubmitStereoFrameV2 *frame, uint
         return WVRCompositorStatusNoFrameAvailable;
     }
     if (bridge.sessionExitRequested) { os_unfair_lock_unlock(&bridge.lock); return WVRCompositorStatusNoFrameAvailable; }
+    const int32_t spaceStatus = makeQueueSpaceLocked(bridge, frame->targetGeneration);
+    if (spaceStatus != WVRCompositorStatusOK) {
+        os_unfair_lock_unlock(&bridge.lock);
+        return spaceStatus;
+    }
     wvr_guest_foveation_register_eye_v1(0, frame->leftTexture, frame->leftSlice, frame->leftX, frame->leftY, frame->leftWidth, frame->leftHeight);
     wvr_guest_foveation_register_eye_v1(1, frame->rightTexture, frame->rightSlice, frame->rightX, frame->rightY, frame->rightWidth, frame->rightHeight);
-    if (bridge.count == kQueueCapacity) dropHeadLocked(bridge);
     const size_t tail = (bridge.head + bridge.count) % kQueueCapacity;
     QueuedFrame &slot = bridge.queue[tail];
     slot.ticket = bridge.nextTicket++;

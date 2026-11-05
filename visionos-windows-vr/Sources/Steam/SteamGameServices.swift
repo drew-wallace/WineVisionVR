@@ -90,6 +90,22 @@ final class SteamGameServices {
                                                permissions: try record(appID, account: account).clientPermissions)
     }
 
+    /// Offline launches use local saves. Disable the guest's automatic sync for
+    /// this launch without changing the user's saved cloud preferences.
+    func prepareOfflineLaunch(_ appID: Int, account: UInt64) throws {
+        try Task.checkCancellation()
+        guard idle(), account != 0 else {
+            throw SteamFileError.invalid("Close the game before preparing offline play.")
+        }
+        var value = try record(appID, account: account)
+        if value.restored && value.permissions.upload && value.requiresCloudRestore != true {
+            value.pendingUpload = true
+            try store(value, appID, account)
+        }
+        try SteamCloudClientSettings.configure(drive: drive, account: account, appID: appID,
+                                               permissions: .init(upload: false, download: false))
+    }
+
     private func requireDirection(_ appID: Int, account: UInt64, upload: Bool, resetID: UUID?) throws {
         try check(account)
         let current = try record(appID, account: account)

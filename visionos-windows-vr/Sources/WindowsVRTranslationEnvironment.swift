@@ -71,8 +71,10 @@ enum WindowsVRTranslationEnvironment {
         // M5 device trace: the cache launcher, Dock and Steam each reserve
         // 128 MiB before the game starts. Slay the Spire 2 refuses even a
         // 1 MiB game buffer; Risk of Rain 2 cannot load D3D11/DXGI once these
-        // reservations fill the 640 MiB pool. Limit this to observed failures.
-        let needsAdditionalCodeSpace = steamAppID == 2868840 || steamAppID == 632360
+        // reservations fill the 640 MiB pool. Bigscreen likewise fails loading
+        // its VR libraries with 416 MiB reserved at the tail and 209 MiB of
+        // images already loaded. Limit this to observed failures.
+        let needsAdditionalCodeSpace = steamAppID == 2868840 || steamAppID == 632360 || steamAppID == 457550
         let key = "FEX_ENABLECODECACHINGWIP"
         if needsAdditionalCodeSpace, environment[key] == nil {
             environment[key] = inheritedCacheOverride ?? "0"
@@ -84,16 +86,18 @@ enum WindowsVRTranslationEnvironment {
         if needsAdditionalCodeSpace, environment[poolKey] == nil {
             environment[poolKey] = inheritedJITPoolOverride ?? "896"
         }
-        // Risk of Rain 2 creates enough translator threads to exhaust the
-        // 16 GiB host arena with 50 MiB lookup tables. The supported L1-only
-        // layout uses 2 MiB per thread.
-        let needsAdditionalAddressSpace = steamAppID == 632360
+        // Risk of Rain 2 and Bigscreen create enough translator threads to
+        // exhaust the 16 GiB host arena with 50 MiB lookup tables. Bigscreen's
+        // build-64 trace fails its 51st live table, then faults at 0x1000000.
+        // The supported L1-only layout uses 2 MiB per thread.
+        let needsAdditionalAddressSpace = steamAppID == 632360 || steamAppID == 457550
         let l2Key = "FEX_DISABLEL2CACHE"
         if needsAdditionalAddressSpace, environment[l2Key] == nil {
             environment[l2Key] = inheritedL2CacheOverride ?? "1"
         }
         // Builds 51 and 52 filled the real 16 GiB reservation even with L2
-        // disabled. Native patch 0025 attempts 32 GiB and retains the existing
+        // disabled. Use the same reservation for Bigscreen's observed arena
+        // exhaustion. Native patch 0025 attempts 32 GiB and retains the existing
         // fallback ladder and configured size cap if reservation fails.
         let arenaKey = "WVR_FEX_ARENA_GIB"
         if needsAdditionalAddressSpace, environment[arenaKey] == nil {

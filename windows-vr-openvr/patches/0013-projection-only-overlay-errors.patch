@@ -1,0 +1,94 @@
+diff --git a/DrvOpenXR/XrBackend.cpp b/DrvOpenXR/XrBackend.cpp
+--- a/DrvOpenXR/XrBackend.cpp
++++ b/DrvOpenXR/XrBackend.cpp
+@@ -44,7 +44,7 @@
+ #include <algorithm>
+ #include <chrono>
+ #include <cinttypes>
+-#include <cstring>
++#include "../OpenOVR/Misc/WVRProjectionLayers.h"
+ #include <mutex>
+ 
+ using namespace vr;
+@@ -583,9 +583,7 @@
+ 	// loading-screen request before changing frame state or copying textures:
+ 	// its quad layer cannot be presented, and compressed/mipmapped skyboxes can
+ 	// otherwise trigger a fatal swapchain error dialog invisible inside VR.
+-	XrInstanceProperties runtime{ XR_TYPE_INSTANCE_PROPERTIES };
+-	if (XR_SUCCEEDED(xrGetInstanceProperties(xr_instance, &runtime)) &&
+-	    std::strcmp(runtime.runtimeName, "WineVision VR") == 0) {
++	if (WVRIsProjectionOnlyRuntime(xr_instance)) {
+ 		OOVR_LOG_ONCE("Skybox override unavailable on projection-only WineVision VR; returning RequestFailed");
+ 		return vr::IVRCompositor_018::VRCompositorError_RequestFailed;
+ 	}
+diff --git a/OpenOVR/Reimpl/BaseOverlay.cpp b/OpenOVR/Reimpl/BaseOverlay.cpp
+--- a/OpenOVR/Reimpl/BaseOverlay.cpp
++++ b/OpenOVR/Reimpl/BaseOverlay.cpp
+@@ -8,6 +8,7 @@
+ #include "Drivers/Backend.h"
+ #include "Misc/Config.h"
+ #include "Misc/ScopeGuard.h"
++#include "Misc/WVRProjectionLayers.h"
+ #include "convert.h"
+ #include "generated/static_bases.gen.h"
+ #include <string>
+@@ -95,6 +96,12 @@
+ 	layerHeaders.clear();
+ 	if (sceneLayer)
+ 		layerHeaders.push_back(sceneLayer);
++
++	if (WVRIsProjectionOnlyRuntime(xr_instance)) {
++		usingInput = false;
++		layers = layerHeaders.data();
++		return static_cast<int>(layerHeaders.size());
++	}
+ 
+ 	// For performance reasons, this indicates that something is using input
+ 	// Don't write it directly to usingInput, as that could cause race conditions between
+@@ -725,6 +732,10 @@
+ EVROverlayError BaseOverlay::SetOverlayTexture(VROverlayHandle_t ulOverlayHandle, const Texture_t* pTexture)
+ {
+ 	USEH();
++	if (WVRIsProjectionOnlyRuntime(xr_instance)) {
++		OOVR_LOG_ONCE("Overlay texture unavailable on projection-only WineVision VR; returning RequestFailed");
++		return VROverlayError_RequestFailed;
++	}
+ 	overlay->texture = *pTexture;
+ 
+ 	BackendManager::Instance().OnOverlayTexture(pTexture);
+@@ -762,10 +773,16 @@
+ }
+ EVROverlayError BaseOverlay::SetOverlayRaw(VROverlayHandle_t ulOverlayHandle, void* pvBuffer, uint32_t unWidth, uint32_t unHeight, uint32_t unDepth)
+ {
++	USEH();
++	if (WVRIsProjectionOnlyRuntime(xr_instance))
++		return VROverlayError_RequestFailed;
+ 	STUBBED();
+ }
+ EVROverlayError BaseOverlay::SetOverlayFromFile(VROverlayHandle_t ulOverlayHandle, const char* pchFilePath)
+ {
++	USEH();
++	if (WVRIsProjectionOnlyRuntime(xr_instance))
++		return VROverlayError_RequestFailed;
+ 	STUBBED();
+ }
+ EVROverlayError BaseOverlay::GetOverlayTexture(VROverlayHandle_t ulOverlayHandle, void** pNativeTextureHandle, void* pNativeTextureRef, uint32_t* pWidth, uint32_t* pHeight, uint32_t* pNativeFormat, ETextureType* pAPIType, EColorSpace* pColorSpace, VRTextureBounds_t* pTextureBounds)
+diff --git a/OpenOVR/Misc/WVRProjectionLayers.h b/OpenOVR/Misc/WVRProjectionLayers.h
+new file mode 100644
+--- /dev/null
++++ b/OpenOVR/Misc/WVRProjectionLayers.h
+@@ -0,0 +1,14 @@
++#pragma once
++
++#include <cstring>
++#include <openxr/openxr.h>
++
++// WineVision currently accepts scene projection layers only. Optional OpenVR
++// loading overlays must fail before resource upload or OpenXR frame mutation.
++// Failed property queries retain upstream handling for unknown runtimes.
++inline bool WVRIsProjectionOnlyRuntime(XrInstance instance)
++{
++    XrInstanceProperties runtime{ XR_TYPE_INSTANCE_PROPERTIES };
++    return XR_SUCCEEDED(xrGetInstanceProperties(instance, &runtime)) &&
++        std::strcmp(runtime.runtimeName, "WineVision VR") == 0;
++}

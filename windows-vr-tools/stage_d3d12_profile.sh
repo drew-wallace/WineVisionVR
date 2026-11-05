@@ -86,6 +86,7 @@ required={
  "windows-vr-openxr/patches/0051-dxmt-sdr-presentation-format.patch",
  "windows-vr-openxr/patches/0052-dxmt-mobile-display-query-outputs.patch",
  "windows-vr-openxr/patches/0053-dxmt-invalid-render-pipeline-guard.patch",
+ "windows-vr-openxr/patches/0054-dxmt-gdi-compatible-surfaces.patch",
  "windows-vr-native/include/WindowsVRReconstruction.h",
  "windows-vr-openxr/include/WindowsVRD3D11ContextExt.h","windows-vr-openxr/include/WindowsVRD3D12CommandQueueExt.h","windows-vr-openxr/include/WindowsVRWMTBridge.h",
  "windows-vr-native/include/WindowsVRCompositorBridge.h","windows-vr-native/include/WindowsVRGuestFoveation.h","windows-vr-ngx/src/WVRMetalFXWMTBridge.h","windows-vr-ngx/src/WVRMetalFXWMTBridge.inc","windows-vr-ngx/include/WindowsVRNGX.h",

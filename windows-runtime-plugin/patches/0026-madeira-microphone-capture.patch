@@ -1,0 +1,634 @@
+diff --git a/build/ntdll-unix/audio_null_ios.c b/build/ntdll-unix/audio_null_ios.c
+--- a/build/ntdll-unix/audio_null_ios.c
++++ b/build/ntdll-unix/audio_null_ios.c
+@@ -38,6 +38,8 @@
+ #include <unistd.h>
+ #include <time.h>
+ #include <AudioToolbox/AudioToolbox.h>
++#include <dlfcn.h>
++#include "ios_capture_ring.h"
+ 
+ /* Struct/enum mirrors from wine/dlls/mmdevapi/unixlib.h. Repeating the
+  * essential layout here avoids include-path drama with Wine's COM
+@@ -70,6 +72,11 @@
+ 
+ #define eRender 0
+ #define eCapture 1
++#define AUDCLNT_E_OUT_OF_ORDER ((HRESULT)0x88890007u)
++#define AUDCLNT_E_WRONG_ENDPOINT_TYPE ((HRESULT)0x88890003u)
++#define AUDCLNT_E_UNSUPPORTED_FORMAT ((HRESULT)0x88890008u)
++#define AUDCLNT_E_INVALID_SIZE ((HRESULT)0x88890009u)
++#define AUDCLNT_S_BUFFER_EMPTY ((HRESULT)0x08890001u)
+ 
+ enum driver_priority {
+     Priority_Unavailable = 0,
+@@ -330,8 +337,10 @@
+  * second concurrent stream we'd need a table. Not worried about that
+  * for the Tier-1 silent driver. */
+ struct ios_stream {
+-    int valid;
+-    int started;
++    _Atomic int valid;
++    EDataFlow flow;
++    struct wvr_capture_ring capture;
++    _Atomic int started;
+     uint64_t start_mach;        /* mach_absolute_time() at start() (null-mode clock) */
+     uint64_t accumulated_frames; /* null-mode: frames "played" before last stop */
+     UINT32 sample_rate;
+@@ -420,11 +429,20 @@
+     UINT32 channels;              /* canonical output channel count */
+     _Atomic uint64_t cb_epoch;    /* ++ at the end of every render pass */
+     _Atomic uint64_t clamped;     /* ml1230: output samples clamped to +-1 */
++    int input_enabled;
++    float input_scratch[8192];
++    _Atomic uint32_t input_errors;
+ };
+ static struct ios_audio_device g_dev;
+ static pthread_mutex_t g_dev_lock = PTHREAD_MUTEX_INITIALIZER;
+ /* Published to the RT callback. Written with release, read with acquire. */
+ static _Atomic(struct ios_stream *) g_mix[IOS_MAX_STREAMS];
++static _Atomic(struct ios_stream *) g_capture[IOS_MAX_STREAMS];
++
++static int ios_capture_authorized(void) {
++    int32_t (*authorized)(void) = (int32_t (*)(void))dlsym(RTLD_DEFAULT,"wvr_audio_capture_is_authorized_v1");
++    return authorized && authorized() == 1;
++}
+ 
+ static struct ios_stream *stream_from_handle(stream_handle h)
+ {
+@@ -796,6 +814,35 @@
+ /* Create the ONE process-wide RemoteIO endpoint, at float32 stereo and the
+  * rate of whichever client opened it first. Returns 0 if the endpoint exists.
+  * Caller holds g_dev_lock. */
++static OSStatus ios_audio_capture_cb(void *refcon, AudioUnitRenderActionFlags *flags,
++                                     const AudioTimeStamp *time, UInt32 bus,
++                                     UInt32 frames, AudioBufferList *unused) {
++    (void)refcon; (void)bus; (void)unused;
++    if (frames>8192) { atomic_fetch_add(&g_dev.input_errors,1); return kAudioUnitErr_TooManyFramesToProcess; }
++    AudioBufferList buffers = { .mNumberBuffers=1,
++        .mBuffers={{.mNumberChannels=1,.mDataByteSize=frames*sizeof(float),.mData=g_dev.input_scratch}} };
++    OSStatus err=AudioUnitRender(g_dev.au,flags,time,1,frames,&buffers);
++    if (err) {
++        atomic_fetch_add(&g_dev.input_errors,1);
++        for (int i=0;i<IOS_MAX_STREAMS;++i) {
++            struct ios_stream *s=atomic_load_explicit(&g_capture[i],memory_order_acquire);
++            if (s && s->started) atomic_store(&s->capture.discontinuity,1);
++        }
++        return err;
++    }
++    if (!buffers.mBuffers[0].mData || buffers.mBuffers[0].mNumberChannels!=1) return kAudio_ParamError;
++    UInt32 returned=buffers.mBuffers[0].mDataByteSize/sizeof(float);
++    if (returned<frames) frames=returned;
++    uint64_t host=(time->mFlags & kAudioTimeStampHostTimeValid) ? time->mHostTime : mach_absolute_time();
++    uint64_t qpc=mach_to_ns(host)/100;
++    for (int i=0;i<IOS_MAX_STREAMS;++i) {
++        struct ios_stream *s=atomic_load_explicit(&g_capture[i],memory_order_acquire);
++        if (s && s->valid && s->started)
++            wvr_capture_push(&s->capture,buffers.mBuffers[0].mData,frames,g_dev.rate,qpc);
++    }
++    return noErr;
++}
++
+ static int ios_dev_create_locked(const struct ios_stream *s)
+ {
+     AudioComponentDescription desc = {0};
+@@ -807,8 +854,8 @@
+     if (g_dev.au) return 0;
+     if (g_dev.failed) return -1;
+ 
+-    g_dev.rate = s->sample_rate ? s->sample_rate : 48000;
+-    g_dev.channels = s->channels >= 2 ? 2 : 1;
++    g_dev.rate = s->flow==eCapture ? 48000 : (s->sample_rate ? s->sample_rate : 48000);
++    g_dev.channels = s->flow==eCapture ? 2 : (s->channels >= 2 ? 2 : 1);
+ 
+     desc.componentType = kAudioUnitType_Output;
+     desc.componentSubType = kAudioUnitSubType_RemoteIO;
+@@ -860,6 +907,95 @@
+     g_dev.au = NULL;
+     g_dev.failed = 1;
+     return -1;
++}
++
++/* Control thread, g_dev_lock held. Quiesce both callbacks before changing input
++ * or retiring a capture client. The same RemoteIO instance owns both directions.
++ * On an enable failure restore playback and report the original hardware error. */
++static OSStatus ios_capture_configure_locked(int enabled, struct ios_stream *retire) {
++    if (!g_dev.au) return kAudioUnitErr_Uninitialized;
++    if (g_dev.input_enabled==enabled && !retire) return noErr;
++    int was_running=g_dev.running, previous=g_dev.input_enabled;
++    OSStatus err=noErr;
++    if (was_running && (err=AudioOutputUnitStop(g_dev.au))) return err;
++    g_dev.running=0;
++    if ((err=AudioUnitUninitialize(g_dev.au))) {
++        if (was_running && !AudioOutputUnitStart(g_dev.au)) g_dev.running=1;
++        return err;
++    }
++    if (retire) for (int i=0;i<IOS_MAX_STREAMS;++i)
++        if (atomic_load(&g_capture[i])==retire) atomic_store_explicit(&g_capture[i],NULL,memory_order_release);
++    UInt32 on=enabled;
++    err=AudioUnitSetProperty(g_dev.au,kAudioOutputUnitProperty_EnableIO,kAudioUnitScope_Input,1,&on,sizeof(on));
++    if (!err && enabled) {
++        AudioStreamBasicDescription fmt={0};
++        fmt.mSampleRate=g_dev.rate; fmt.mFormatID=kAudioFormatLinearPCM;
++        fmt.mFormatFlags=kAudioFormatFlagIsFloat|kAudioFormatFlagIsPacked;
++        fmt.mBytesPerPacket=fmt.mBytesPerFrame=sizeof(float);
++        fmt.mFramesPerPacket=fmt.mChannelsPerFrame=1; fmt.mBitsPerChannel=32;
++        err=AudioUnitSetProperty(g_dev.au,kAudioUnitProperty_StreamFormat,kAudioUnitScope_Output,1,&fmt,sizeof(fmt));
++        UInt32 allocate=0;
++        if (!err) err=AudioUnitSetProperty(g_dev.au,kAudioUnitProperty_ShouldAllocateBuffer,kAudioUnitScope_Output,1,&allocate,sizeof(allocate));
++        AURenderCallbackStruct cb={ios_audio_capture_cb,NULL};
++        if (!err) err=AudioUnitSetProperty(g_dev.au,kAudioOutputUnitProperty_SetInputCallback,kAudioUnitScope_Global,1,&cb,sizeof(cb));
++        UInt32 maximum=8192;
++        if (!err) err=AudioUnitSetProperty(g_dev.au,kAudioUnitProperty_MaximumFramesPerSlice,kAudioUnitScope_Global,0,&maximum,sizeof(maximum));
++    }
++    if (!err) err=AudioUnitInitialize(g_dev.au);
++    if (err) {
++        UInt32 restore=previous;
++        OSStatus restored=AudioUnitSetProperty(g_dev.au,kAudioOutputUnitProperty_EnableIO,kAudioUnitScope_Input,1,&restore,sizeof(restore));
++        if (!restored) restored=AudioUnitInitialize(g_dev.au);
++        /* A failed disable must never resume microphone I/O after the last
++         * capture client stopped. Keep the unit stopped and return the error. */
++        if (!restored && was_running && enabled && !AudioOutputUnitStart(g_dev.au)) g_dev.running=1;
++        fprintf(stderr,"[ios_capture] input configuration failed=%d playback restore=%d\n",(int)err,(int)restored);
++        return err;
++    }
++    g_dev.input_enabled=enabled;
++    if (was_running) {
++        err=AudioOutputUnitStart(g_dev.au);
++        if (!err) g_dev.running=1;
++        else if (enabled) {
++            /* Restore the previous playback configuration if enabling input
++             * cannot start. Never restore active input after a failed stop. */
++            (void)AudioUnitUninitialize(g_dev.au);
++            UInt32 restore=previous;
++            OSStatus restored=AudioUnitSetProperty(g_dev.au,kAudioOutputUnitProperty_EnableIO,kAudioUnitScope_Input,1,&restore,sizeof(restore));
++            if (!restored) restored=AudioUnitInitialize(g_dev.au);
++            if (!restored) restored=AudioOutputUnitStart(g_dev.au);
++            if (!restored) { g_dev.running=1; g_dev.input_enabled=previous; }
++            fprintf(stderr,"[ios_capture] start failed=%d playback restore=%d\n",(int)err,(int)restored);
++        }
++    }
++    fprintf(stderr,"[ios_capture] hardware input=%d status=%d rate=%u\n",enabled,(int)err,g_dev.rate);
++    return err;
++}
++
++static int ios_capture_any_started(struct ios_stream *except) {
++    for (int i=0;i<IOS_MAX_STREAMS;++i) {
++        struct ios_stream *s=atomic_load_explicit(&g_capture[i],memory_order_acquire);
++        if (s && s!=except && s->started) return 1;
++    }
++    return 0;
++}
++
++static int ios_capture_attach(struct ios_stream *s) {
++    int slot=-1;
++    pthread_mutex_lock(&g_dev_lock);
++    if (!ios_dev_create_locked(s)) for (int i=0;i<IOS_MAX_STREAMS;++i)
++        if (!atomic_load(&g_capture[i])) { slot=i; atomic_store_explicit(&g_capture[i],s,memory_order_release); break; }
++    pthread_mutex_unlock(&g_dev_lock);
++    return slot<0 ? -1:0;
++}
++
++static int ios_capture_detach(struct ios_stream *s) {
++    pthread_mutex_lock(&g_dev_lock);
++    /* Uninitialize quiesces callbacks before this client can be freed. */
++    OSStatus err=ios_capture_configure_locked(ios_capture_any_started(s),s);
++    pthread_mutex_unlock(&g_dev_lock);
++    if (err) fprintf(stderr,"[ios_capture] detach failed=%d; retaining client memory for safety\n",(int)err);
++    return err;
+ }
+ 
+ /* Describe this stream's ring for the mixer and publish it. Failure leaves the
+@@ -921,6 +1057,7 @@
+  * create/release/create churn that trapped caulk. */
+ static void ios_dev_detach(struct ios_stream *s)
+ {
++    if (s->flow==eCapture) { (void)ios_capture_detach(s); return; }
+     int i, spins = 0;
+     int cleared = 0;
+     uint64_t e0;
+@@ -956,11 +1093,15 @@
+     pthread_mutex_unlock(&g_dev_lock);
+ }
+ 
+-static void ios_dev_stop_if_idle(void)
++static OSStatus ios_dev_stop_if_idle(void)
+ {
+     int i, any = 0;
++    OSStatus err=noErr;
+ 
+     pthread_mutex_lock(&g_dev_lock);
++    int capture_started=ios_capture_any_started(NULL);
++    if (!capture_started && g_dev.input_enabled) err=ios_capture_configure_locked(0,NULL);
++    any=capture_started;
+     for (i = 0; i < IOS_MAX_STREAMS; i++) {
+         struct ios_stream *m = atomic_load_explicit(&g_mix[i], memory_order_relaxed);
+         if (m && m->started) { any = 1; break; }
+@@ -970,6 +1111,7 @@
+         g_dev.running = 0;
+     }
+     pthread_mutex_unlock(&g_dev_lock);
++    return err;
+ }
+ 
+ /* WVR audio output recovery v1: control-thread only. Release the output
+@@ -1118,8 +1260,7 @@
+ static NTSTATUS ios_get_endpoint_ids(void *args) {
+     LOG_FN_CALL(3, "get_endpoint_ids");
+     struct get_endpoint_ids_params *p = args;
+-    /* Only render endpoints; refuse capture entirely. */
+-    if (p->flow != eRender) {
++    if (p->flow != eRender && (p->flow != eCapture || !ios_capture_authorized())) {
+         p->num = 0;
+         p->default_idx = 0;
+         p->result = S_OK;
+@@ -1129,8 +1270,13 @@
+      * and endpoint.device as char* (single-byte). Both stored as byte
+      * offsets from the endpoints buffer base. */
+     static const WCHAR dev_name_w[] = { 'i','O','S',' ','N','u','l','l', 0 };
+-    unsigned int name_bytes = sizeof(dev_name_w);
+-    unsigned int device_bytes = sizeof(IOS_DEVICE_NAME);
++    static const WCHAR mic_name_w[] = {'V','i','s','i','o','n',' ','P','r','o',' ','M','i','c','r','o','p','h','o','n','e',0};
++    static const char mic_id[]="wvr-microphone-v1";
++    int capture=p->flow==eCapture;
++    const WCHAR *name=capture ? mic_name_w:dev_name_w;
++    const char *device=capture ? mic_id:IOS_DEVICE_NAME;
++    unsigned int name_bytes = capture ? sizeof(mic_name_w):sizeof(dev_name_w);
++    unsigned int device_bytes = capture ? sizeof(mic_id):sizeof(IOS_DEVICE_NAME);
+     unsigned int needed = sizeof(struct endpoint) + name_bytes + device_bytes;
+     if (p->size < needed) {
+         p->num = 1;
+@@ -1142,8 +1288,8 @@
+     unsigned int name_off = sizeof(struct endpoint);
+     unsigned int device_off = name_off + name_bytes;
+     char *buf = (char *)p->endpoints;
+-    memcpy(buf + name_off, dev_name_w, name_bytes);
+-    memcpy(buf + device_off, IOS_DEVICE_NAME, device_bytes);
++    memcpy(buf + name_off, name, name_bytes);
++    memcpy(buf + device_off, device, device_bytes);
+     p->endpoints[0].name = name_off;
+     p->endpoints[0].device = device_off;
+     p->num = 1;
+@@ -1155,6 +1301,14 @@
+ static NTSTATUS ios_create_stream(void *args) {
+     LOG_FN_CALL(4, "create_stream");
+     struct create_stream_params *p = args;
++    if (p->stream) *p->stream=0;
++    if (p->flow!=eRender && p->flow!=eCapture) { p->result=E_FAIL; return STATUS_SUCCESS; }
++    if (p->flow==eCapture && (!ios_capture_authorized() || !p->fmt ||
++        !wvr_capture_format(p->fmt->nSamplesPerSec,p->fmt->nChannels,p->fmt->wBitsPerSample,ios_fmt_is_float(p->fmt)) ||
++        (p->fmt->wFormatTag!=1 && p->fmt->wFormatTag!=3 && p->fmt->wFormatTag!=0xfffe) ||
++        p->fmt->nBlockAlign!=p->fmt->nChannels*(p->fmt->wBitsPerSample/8))) {
++        p->result=AUDCLNT_E_UNSUPPORTED_FORMAT; return STATUS_SUCCESS;
++    }
+     uint64_t dur_frames;
+     /* ml739: a stream per client. */
+     struct ios_stream *s = calloc(1, sizeof(*s));
+@@ -1173,6 +1327,7 @@
+                 p->fmt ? (unsigned)p->fmt->nBlockAlign : 0u);
+     }
+     s->valid = 1;
++    s->flow=p->flow;
+     s->started = 0;
+     s->start_mach = 0;
+     s->accumulated_frames = 0;
+@@ -1196,6 +1351,15 @@
+     s->pending_frames = 0;
+     atomic_store(&s->write_pos, 0);
+     atomic_store(&s->play_pos, 0);
++    if (s->flow==eCapture) {
++        s->is_float=ios_fmt_is_float(p->fmt); s->sample_bits=p->fmt->wBitsPerSample;
++        s->mixable=1;
++        if (!s->render_scratch || !s->ring ||
++            wvr_capture_init(&s->capture,s->ring,s->buffer_frames,s->sample_rate,s->channels,s->sample_bits,s->is_float)) {
++            ios_audio_free_scratch(s->render_scratch,s->scratch_guest); free(s->ring); free(s);
++            p->result=E_OUTOFMEMORY; return STATUS_SUCCESS;
++        }
++    }
+ 
+     if (p->flow == eRender && s->ring)
+         ios_dev_attach(s, p->fmt);   /* failure -> null-mode */
+@@ -1208,11 +1372,18 @@
+     if (stream_register(s)) {
+         fprintf(stderr, "[ios-astream] ml739 too many streams -- refusing\n");
+         ios_dev_detach(s);
++        if (s->flow==eCapture) wvr_capture_destroy(&s->capture);
+         ios_audio_free_scratch(s->render_scratch, s->scratch_guest); free(s->ring); free(s);
+         /* the handle was published above; it now points at freed memory */
+         if (p->stream) *p->stream = 0;
+         p->result = E_OUTOFMEMORY;
+         return STATUS_SUCCESS;
++    }
++    if (s->flow==eCapture && ios_capture_attach(s)) {
++        stream_unregister(s); wvr_capture_destroy(&s->capture);
++        ios_audio_free_scratch(s->render_scratch,s->scratch_guest); free(s->ring); free(s);
++        if (p->stream) *p->stream=0;
++        p->result=E_FAIL; return STATUS_SUCCESS;
+     }
+     p->result = S_OK;
+     return STATUS_SUCCESS;
+@@ -1234,9 +1405,12 @@
+         NtWaitForSingleObject(p->timer_thread, FALSE, NULL);
+         NtClose(p->timer_thread);
+     }
+-    ios_dev_detach(s);
++    if (s->flow==eCapture) {
++        if (ios_capture_detach(s)) { p->result=E_FAIL; return STATUS_SUCCESS; }
++    } else ios_dev_detach(s);
+     ios_dev_stop_if_idle();
+     stream_unregister(s);
++    if (s->flow==eCapture) wvr_capture_destroy(&s->capture);
+     ios_audio_free_scratch(s->render_scratch, s->scratch_guest);
+     free(s->ring);
+     free(s);
+@@ -1254,6 +1428,17 @@
+          * already sees this client. */
+         s->start_mach = mach_absolute_time();
+         s->started = 1;
++        if (s->flow==eCapture) {
++            if (atomic_load(&s->capture.clock)) atomic_store(&s->capture.discontinuity,1);
++            pthread_mutex_lock(&g_dev_lock);
++            OSStatus err=ios_capture_configure_locked(1,NULL);
++            if (!err && !g_dev.running) {
++                err=AudioOutputUnitStart(g_dev.au);
++                if (!err) g_dev.running=1;
++            }
++            pthread_mutex_unlock(&g_dev_lock);
++            if (err) { s->started=0; ios_dev_stop_if_idle(); p->result=E_FAIL; return STATUS_SUCCESS; }
++        }
+         ios_dev_start();
+     }
+     p->result = S_OK;
+@@ -1267,7 +1452,8 @@
+     if (s->started) {
+         s->accumulated_frames = elapsed_frames(s);
+         s->started = 0;
+-        ios_dev_stop_if_idle();
++        OSStatus stopped=ios_dev_stop_if_idle();
++        if (s->flow==eCapture && stopped) { p->result=E_FAIL; return STATUS_SUCCESS; }
+     }
+     p->result = S_OK;
+     return STATUS_SUCCESS;
+@@ -1277,6 +1463,8 @@
+     struct stream_handle_params *p = args;
+     struct ios_stream *s = stream_from_handle(p->stream);
+     if (!s) { p->result = AUDCLNT_E_NOT_INITIALIZED; return STATUS_SUCCESS; }
++    if (s->flow==eCapture && s->started) { p->result=(HRESULT)0x88890005u; return STATUS_SUCCESS; }
++    if (s->flow==eCapture) wvr_capture_reset(&s->capture);
+     s->started = 0;
+     s->accumulated_frames = 0;
+     s->start_mach = 0;
+@@ -1360,6 +1548,11 @@
+     LOG_FN_CALL(9, "timer_loop");
+     if (ios_audio_lead_ms()) ios_audio_timer_thread_rt();
+     while (s->valid) {
++        if (s->flow==eCapture) {
++            if (s->event && s->started && wvr_capture_available(&s->capture)) NtSetEvent(s->event,NULL);
++            usleep(10000);
++            continue;
++        }
+         UINT32 rate = s->sample_rate ? s->sample_rate : IOS_AUDIO_SAMPLE_RATE;
+         uint64_t period = rate / 100, lead, play, wr, pad, now, sleep_ns, deadline, t;
+ 
+@@ -1445,6 +1638,7 @@
+     struct get_render_buffer_params *p = args;
+     struct ios_stream *s = stream_from_handle(p->stream);
+     if (!s) { if (p->data) *p->data = NULL; p->result = AUDCLNT_E_NOT_INITIALIZED; return STATUS_SUCCESS; }
++    if (s->flow!=eRender) { if (p->data) *p->data=NULL; p->result=AUDCLNT_E_WRONG_ENDPOINT_TYPE; return STATUS_SUCCESS; }
+     if (ios_stream_is_live(s)) {
+         uint64_t padding = atomic_load(&s->write_pos) - atomic_load(&s->play_pos);
+         if (p->frames + padding > s->buffer_frames) {
+@@ -1492,6 +1686,7 @@
+ static NTSTATUS ios_release_render_buffer(void *args) {
+     struct release_render_buffer_params *p = args;
+     struct ios_stream *s = stream_from_handle(p->stream);
++    if (s && s->flow!=eRender) { p->result=AUDCLNT_E_WRONG_ENDPOINT_TYPE; return STATUS_SUCCESS; }
+     if (!s) { p->result = AUDCLNT_E_NOT_INITIALIZED; return STATUS_SUCCESS; }
+     if (ios_stream_is_live(s) && p->written_frames > 0) {
+         UINT32 fb = s->frame_bytes;
+@@ -1561,20 +1756,41 @@
+     if (p->frames) *p->frames = 0;
+     if (p->data) *p->data = NULL;
+     if (p->flags) *p->flags = 0;
+-    p->result = S_OK;
++    if (p->devpos) *p->devpos=0;
++    if (p->qpcpos) *p->qpcpos=0;
++    struct ios_stream *s=stream_from_handle(p->stream);
++    if (!s || s->flow!=eCapture) { p->result=AUDCLNT_E_NOT_INITIALIZED; return STATUS_SUCCESS; }
++    uint32_t frames=0, flags=0; uint64_t pos=0, qpc=0;
++    int result=wvr_capture_get(&s->capture,s->render_scratch,&frames,&flags,&pos,&qpc);
++    if (result<0) { p->result=AUDCLNT_E_OUT_OF_ORDER; return STATUS_SUCCESS; }
++    if (!result) { p->result=AUDCLNT_S_BUFFER_EMPTY; return STATUS_SUCCESS; }
++    if (p->frames) *p->frames=frames;
++    if (p->data) *p->data=s->render_scratch;
++    if (p->flags) *p->flags=flags;
++    if (p->devpos) *p->devpos=pos;
++    if (p->qpcpos) *p->qpcpos=qpc;
++    p->result=S_OK;
+     return STATUS_SUCCESS;
+ }
+ 
+ static NTSTATUS ios_release_capture_buffer(void *args) {
+     struct release_capture_buffer_params *p = args;
+-    p->result = S_OK;
++    struct ios_stream *s=stream_from_handle(p->stream);
++    if (!s || s->flow!=eCapture) p->result=AUDCLNT_E_NOT_INITIALIZED;
++    else if (!s->capture.pending) p->result=AUDCLNT_E_OUT_OF_ORDER;
++    else p->result=wvr_capture_release(&s->capture,p->done) ? AUDCLNT_E_INVALID_SIZE:S_OK;
+     return STATUS_SUCCESS;
+ }
+ 
+ static NTSTATUS ios_is_format_supported(void *args) {
+     struct is_format_supported_params *p = args;
+     LOG_FN_CALL(14, "is_format_supported");
+-    /* Accept anything. */
++    if (p->flow==eCapture && (!p->fmt_in || !wvr_capture_format(p->fmt_in->nSamplesPerSec,
++        p->fmt_in->nChannels,p->fmt_in->wBitsPerSample,ios_fmt_is_float(p->fmt_in)) ||
++        (p->fmt_in->wFormatTag!=1 && p->fmt_in->wFormatTag!=3 && p->fmt_in->wFormatTag!=0xfffe) ||
++        p->fmt_in->nBlockAlign!=p->fmt_in->nChannels*(p->fmt_in->wBitsPerSample/8))) {
++        p->result=AUDCLNT_E_UNSUPPORTED_FORMAT; return STATUS_SUCCESS;
++    }
+     p->result = S_OK;
+     return STATUS_SUCCESS;
+ }
+@@ -1610,6 +1826,10 @@
+             0x80,0x00, 0x00,0xAA, 0x00,0x38,0x9B,0x71
+         };
+         memcpy((char *)p->fmt + 24, pcm_guid, 16);
++        if (p->flow==eCapture) {
++            f->nChannels=1; f->nBlockAlign=4; f->nAvgBytesPerSec=IOS_AUDIO_SAMPLE_RATE*4;
++            *mask=4; /* SPEAKER_FRONT_CENTER */
++        }
+     }
+     p->result = S_OK;
+     return STATUS_SUCCESS;
+@@ -1646,7 +1866,8 @@
+     struct ios_stream *s = stream_from_handle(p->stream);
+     if (!s) { if (p->padding) *p->padding = 0; p->result = AUDCLNT_E_NOT_INITIALIZED; return STATUS_SUCCESS; }
+     if (p->padding) {
+-        if (ios_stream_is_live(s)) {
++        if (s->flow==eCapture) *p->padding=wvr_capture_available(&s->capture);
++        else if (ios_stream_is_live(s)) {
+             uint64_t pad = atomic_load(&s->write_pos) - atomic_load(&s->play_pos);
+             *p->padding = (UINT32)(pad > s->buffer_frames ? s->buffer_frames : pad);
+         } else {
+@@ -1660,6 +1881,9 @@
+ static NTSTATUS ios_get_next_packet_size(void *args) {
+     struct get_next_packet_size_params *p = args;
+     if (p->frames) *p->frames = 0;
++    struct ios_stream *s=stream_from_handle(p->stream);
++    if (!s || s->flow!=eCapture) { p->result=AUDCLNT_E_NOT_INITIALIZED; return STATUS_SUCCESS; }
++    if (p->frames) *p->frames=wvr_capture_packet_frames(&s->capture);
+     p->result = S_OK;
+     return STATUS_SUCCESS;
+ }
+@@ -1683,7 +1907,8 @@
+      * RT callback actually consumed — the true hardware clock. Null-mode
+      * fallback: wall-clock synthesis as before. */
+     if (p->pos) {
+-        if (ios_stream_is_live(s))
++        if (s->flow==eCapture) *p->pos=atomic_load(&s->capture.clock);
++        else if (ios_stream_is_live(s))
+             *p->pos = atomic_load(&s->play_pos);
+         else
+             *p->pos = elapsed_frames(s);
+diff --git a/build/ntdll-unix/ios_capture_ring.h b/build/ntdll-unix/ios_capture_ring.h
+new file mode 100644
+--- /dev/null
++++ b/build/ntdll-unix/ios_capture_ring.h
+@@ -0,0 +1,135 @@
++#ifndef WVR_IOS_CAPTURE_RING_H
++#define WVR_IOS_CAPTURE_RING_H
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++#include <stdatomic.h>
++#include <math.h>
++
++/* Single hardware producer, one WASAPI consumer per stream. The producer never
++ * overwrites unread or outstanding packets. No allocation/locks in push(). */
++struct wvr_capture_ring {
++    unsigned char *data;
++    uint64_t *positions, *timestamps;
++    uint32_t capacity, rate, channels, bits, frame_bytes;
++    int is_float;
++    _Atomic uint64_t written, consumed, clock;
++    _Atomic unsigned discontinuity;
++    uint32_t pending, pending_flags;
++    uint64_t pending_position, next_position;
++    double phase;
++};
++
++static int wvr_capture_format(uint32_t rate, uint32_t channels, uint32_t bits, int is_float) {
++    return rate >= 8000 && rate <= 192000 && (channels == 1 || channels == 2) &&
++        ((is_float && bits == 32) || (!is_float && (bits == 16 || bits == 32)));
++}
++
++static int wvr_capture_init(struct wvr_capture_ring *r, unsigned char *data,
++                            uint32_t capacity, uint32_t rate, uint32_t channels,
++                            uint32_t bits, int is_float) {
++    if (!r || !data || !capacity || !wvr_capture_format(rate,channels,bits,is_float)) return -1;
++    memset(r,0,sizeof(*r));
++    r->positions = calloc(capacity,sizeof(uint64_t));
++    r->timestamps = calloc(capacity,sizeof(uint64_t));
++    if (!r->positions || !r->timestamps) {
++        free(r->positions); free(r->timestamps); memset(r,0,sizeof(*r)); return -1;
++    }
++    r->data=data; r->capacity=capacity; r->rate=rate; r->channels=channels;
++    r->bits=bits; r->is_float=is_float; r->frame_bytes=channels*(bits/8);
++    atomic_init(&r->written,0); atomic_init(&r->consumed,0); atomic_init(&r->clock,0);
++    atomic_init(&r->discontinuity,0);
++    return 0;
++}
++
++static void wvr_capture_destroy(struct wvr_capture_ring *r) {
++    free(r->positions); free(r->timestamps); memset(r,0,sizeof(*r));
++}
++
++/* Only call with capture stopped and the hardware callback quiesced. */
++static void wvr_capture_reset(struct wvr_capture_ring *r) {
++    atomic_store(&r->written,0); atomic_store(&r->consumed,0); atomic_store(&r->clock,0);
++    atomic_store(&r->discontinuity,0); r->pending=0; r->pending_flags=0;
++    r->pending_position=r->next_position=0; r->phase=0;
++}
++
++static uint32_t wvr_capture_available(const struct wvr_capture_ring *r) {
++    uint64_t rd=atomic_load_explicit(&r->consumed,memory_order_acquire);
++    uint64_t wr=atomic_load_explicit(&r->written,memory_order_acquire);
++    return (uint32_t)(wr>rd ? wr-rd : 0);
++}
++
++static uint32_t wvr_capture_packet_frames(const struct wvr_capture_ring *r) {
++    uint32_t n=wvr_capture_available(r), period=r->rate/100;
++    return n<period ? n : period;
++}
++
++static void wvr_capture_push(struct wvr_capture_ring *r, const float *mono,
++                             uint32_t frames, uint32_t input_rate, uint64_t qpc100ns) {
++    if (!mono || !frames || !input_rate) return;
++    uint64_t wr=atomic_load_explicit(&r->written,memory_order_relaxed);
++    uint64_t clock=atomic_load_explicit(&r->clock,memory_order_relaxed);
++    double step=(double)input_rate/r->rate;
++    for (; r->phase<frames; r->phase+=step, ++clock) {
++        uint64_t rd=atomic_load_explicit(&r->consumed,memory_order_acquire);
++        if (wr-rd>=r->capacity) {
++            atomic_store_explicit(&r->discontinuity,1,memory_order_release); continue;
++        }
++        uint32_t i=(uint32_t)r->phase;
++        float a=mono[i], b=mono[i+1<frames ? i+1:i];
++        double fraction=r->phase-i;
++        double value=fraction>0 ? a+(b-a)*fraction : a;
++        if (!isfinite(value)) value=0;
++        if (value>1) value=1; if (value< -1) value= -1;
++        unsigned char *dst=r->data+(wr%r->capacity)*r->frame_bytes;
++        for (uint32_t c=0;c<r->channels;++c) {
++            if (r->is_float) { float v=(float)value; memcpy(dst+c*4,&v,4); }
++            else if (r->bits==16) {
++                int16_t v=value<= -1 ? INT16_MIN : (int16_t)(value*INT16_MAX);
++                memcpy(dst+c*2,&v,2);
++            } else {
++                int32_t v=value<= -1 ? INT32_MIN : (int32_t)(value*INT32_MAX);
++                memcpy(dst+c*4,&v,4);
++            }
++        }
++        r->positions[wr%r->capacity]=clock;
++        r->timestamps[wr%r->capacity]=qpc100ns+(uint64_t)(r->phase*10000000.0/input_rate);
++        ++wr;
++    }
++    r->phase-=frames;
++    atomic_store_explicit(&r->clock,clock,memory_order_release);
++    atomic_store_explicit(&r->written,wr,memory_order_release);
++}
++
++/* -1: outstanding packet, 0: no captured data, 1: valid packet in scratch. */
++static int wvr_capture_get(struct wvr_capture_ring *r, unsigned char *scratch,
++                            uint32_t *frames, uint32_t *flags,
++                            uint64_t *position, uint64_t *qpc100ns) {
++    *frames=0; *flags=0;
++    if (r->pending) return -1;
++    uint32_t count=wvr_capture_packet_frames(r);
++    if (!count) return 0;
++    uint64_t rd=atomic_load_explicit(&r->consumed,memory_order_relaxed);
++    uint32_t index=(uint32_t)(rd%r->capacity), first=r->capacity-index;
++    if (first>count) first=count;
++    memcpy(scratch,r->data+(size_t)index*r->frame_bytes,(size_t)first*r->frame_bytes);
++    if (first<count) memcpy(scratch+(size_t)first*r->frame_bytes,r->data,(size_t)(count-first)*r->frame_bytes);
++    *frames=count; *position=r->positions[index]; *qpc100ns=r->timestamps[index];
++    *flags=(atomic_exchange_explicit(&r->discontinuity,0,memory_order_acq_rel) ||
++        *position!=r->next_position) ? 1:0;
++    r->pending_position=*position;
++    r->pending=count; r->pending_flags=*flags;
++    return 1;
++}
++
++static int wvr_capture_release(struct wvr_capture_ring *r, uint32_t done) {
++    if (!r->pending || (done && done!=r->pending)) return -1;
++    if (done) {
++        atomic_fetch_add_explicit(&r->consumed,done,memory_order_release);
++        r->next_position=r->pending_position+done;
++    }
++    else if (r->pending_flags) atomic_store_explicit(&r->discontinuity,1,memory_order_release);
++    r->pending=0;
++    return 0;
++}
++#endif

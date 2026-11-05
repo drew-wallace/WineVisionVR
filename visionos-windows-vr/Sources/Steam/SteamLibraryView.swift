@@ -180,6 +180,9 @@ struct SteamLibraryView: View {
                 Image(systemName: "exclamationmark.circle").foregroundStyle(.orange)
                 Text(error).font(.footnote).lineLimit(3)
                 Spacer()
+                Button("Retry connection", systemImage: "arrow.clockwise") {
+                    Task { await model.refreshLibrary() }
+                }.disabled(model.isLoadingLibrary || model.runtimeBusy || model.servicesBusy)
                 Button("Dismiss", systemImage: "xmark") { model.error = nil }.labelStyle(.iconOnly)
             }.padding().background(.regularMaterial)
         } else if let id = model.serviceWarnings.keys.sorted().first, let warning = model.serviceWarnings[id] {

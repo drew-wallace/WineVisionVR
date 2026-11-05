@@ -1,4 +1,47 @@
 import Foundation
+
+@MainActor
+private func testConnectionRecovery() async throws {
+    var attempts = 0
+    var retries = 0
+    let value = try await SteamConnectionRecovery.retry(operation: {
+        attempts += 1
+        if attempts == 1 { throw SteamError.connectionTimeout }
+        return 42
+    }, beforeRetry: { retries += 1 })
+    expect(value == 42 && attempts == 2 && retries == 1)
+
+    attempts = 0; retries = 0
+    do {
+        _ = try await SteamConnectionRecovery.retry(operation: {
+            attempts += 1
+            throw URLError(.notConnectedToInternet)
+        }, beforeRetry: { retries += 1 })
+        fatalError("Repeated network failure accepted")
+    } catch { expect(SteamConnectionRecovery.isConnectionFailure(error)) }
+    expect(attempts == 2 && retries == 1)
+
+    attempts = 0; retries = 0
+    do {
+        _ = try await SteamConnectionRecovery.retry(operation: {
+            attempts += 1
+            throw SteamError.invalidCredentials
+        }, beforeRetry: { retries += 1 })
+        fatalError("Account refusal accepted")
+    } catch { expect(!SteamConnectionRecovery.isConnectionFailure(error)) }
+    expect(attempts == 1 && retries == 0)
+
+    attempts = 0
+    do {
+        _ = try await SteamConnectionRecovery.retry(operation: {
+            attempts += 1
+            throw SteamError.disconnected
+        }, beforeRetry: { throw CancellationError() })
+        fatalError("Cancelled retry accepted")
+    } catch { expect(error is CancellationError) }
+    expect(attempts == 1)
+    log("PASS connection recovery retries once, preserves account errors and honors cancellation")
+}
 import CryptoKit
 func log(_ text: String) { FileHandle.standardOutput.write(Data((text + "\n").utf8)) }
 func expect(_ condition: Bool, _ message: String = "assertion failed", line: UInt = #line) { precondition(condition, "\(message) at line \(line)") }
@@ -70,6 +113,7 @@ final class FakeSteam: SteamCMSession {
 
 @main struct Probe {
     @MainActor static func main() async throws {
+        try await testConnectionRecovery()
         let fm = FileManager.default
         let root = fm.temporaryDirectory.appendingPathComponent("wvr-steam-test-" + UUID().uuidString)
         defer { try? fm.removeItem(at: root) }
@@ -96,6 +140,21 @@ final class FakeSteam: SteamCMSession {
         expect(!fm.fileExists(atPath: remote.appendingPathComponent("extra.save").path))
         expect(!fm.fileExists(atPath: cache.path) && steam.batches == 0)
         log("PASS first restore clears legacy saves/cache and never uploads")
+
+        let cloudBeforeOffline = steam.remote
+        try service.prepareOfflineLaunch(10, account: steam.steamID)
+        expect(try service.record(10, account: steam.steamID).pendingUpload)
+        expect(try service.permissions(10, account: steam.steamID) == .init(upload: true, download: true))
+        expect(steam.remote == cloudBeforeOffline && steam.commits == 0)
+        let config = drive.appendingPathComponent(SteamRuntimeFiles.relativeRoot + "/userdata/\(steam.steamID & 0xffff_ffff)/config/localconfig.vdf")
+        var offlineParser = try SteamKeyValues(Data(contentsOf: config))
+        let offlineSettings = try offlineParser.read()
+        expect(offlineSettings["userlocalconfigstore"]?["software"]?["valve"]?["steam"]?["apps"]?["10"]?["cloudenabled"]?.string == "0")
+        try service.prepareClientSettings(10)
+        var onlineParser = try SteamKeyValues(Data(contentsOf: config))
+        let onlineSettings = try onlineParser.read()
+        expect(onlineSettings["userlocalconfigstore"]?["software"]?["valve"]?["steam"]?["apps"]?["10"]?["cloudenabled"]?.string == "1")
+        log("PASS offline launch preserves preferences and cloud, journals progress, and online launch restores client sync")
 
         try service.markPending(10)
         expect(try service.pendingApps() == [10])

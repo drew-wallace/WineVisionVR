@@ -116,6 +116,9 @@ function(add_opencomposite_variant variant platform)
                 COMMAND "${GIT_EXECUTABLE}" -C <SOURCE_DIR> apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/0010-crop-shader-resource-cache.patch"
                 COMMAND "${GIT_EXECUTABLE}" -C <SOURCE_DIR> apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/0006-writable-application-state.patch"
                 COMMAND "${GIT_EXECUTABLE}" -C <SOURCE_DIR> apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/0011-openvr-scene-depth-after-crop.patch"
+                COMMAND "${GIT_EXECUTABLE}" -C <SOURCE_DIR> apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/0012-projection-only-skybox-error.patch"
+                COMMAND "${GIT_EXECUTABLE}" -C <SOURCE_DIR> apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/0013-projection-only-overlay-errors.patch"
+                COMMAND "${GIT_EXECUTABLE}" -C <SOURCE_DIR> apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/0014-fit-stereo-submission-targets.patch"
             CMAKE_ARGS
                 "-DCMAKE_INSTALL_PREFIX=${OPENCOMPOSITE_STAGE_ROOT}/WindowsVR/Guest/${variant}"
                 "-DERROR_ON_WARNING=OFF"
@@ -144,6 +147,8 @@ function(add_opencomposite_variant variant platform)
         ${_generator_platform_args}
         PATCH_COMMAND "${GIT_EXECUTABLE}" -C <SOURCE_DIR> apply "${OPENCOMPOSITE_GRAPHICS_PATCH}"
             COMMAND "${GIT_EXECUTABLE}" -C <SOURCE_DIR> apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/0008-openvr-scene-depth.patch"
+            COMMAND "${GIT_EXECUTABLE}" -C <SOURCE_DIR> apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/0012-projection-only-skybox-error.patch"
+            COMMAND "${GIT_EXECUTABLE}" -C <SOURCE_DIR> apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/0013-projection-only-overlay-errors.patch"
         CMAKE_ARGS
             "-DCMAKE_INSTALL_PREFIX=${OPENCOMPOSITE_STAGE_ROOT}/WindowsVR/Guest/${variant}"
             "-DERROR_ON_WARNING=ON"

@@ -11,6 +11,10 @@ __attribute__((visibility("default"))) int32_t wvr_audio_session_install_mixing_
 // Reinitializes the existing unit's resources, preserves game audio clients,
 // and returns the actual Core Audio status (not a claim about audible recovery).
 __attribute__((visibility("default"))) int32_t wvr_audio_output_reset_v1(void);
+// The host sets this only after the user grants microphone permission and the
+// recording/playback session is active. Native capture never requests permission.
+__attribute__((visibility("default"))) void wvr_audio_capture_set_authorized_v1(int32_t authorized);
+__attribute__((visibility("default"))) int32_t wvr_audio_capture_is_authorized_v1(void);
 #ifdef __cplusplus
 }
 #endif

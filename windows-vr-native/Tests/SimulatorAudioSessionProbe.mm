@@ -25,5 +25,17 @@ int main() { setvbuf(stdout, nullptr, _IONBF, 0); @autoreleasepool {
     require((session.categoryOptions & options) == options, "modern caller options remain unchanged");
     require([session setCategory:AVAudioSessionCategoryPlayback error:&error], "repeated legacy activation succeeds");
     require(session.categoryOptions & AVAudioSessionCategoryOptionMixWithOthers, "legacy reset cannot interrupt helper audio");
+    require(wvr_audio_capture_is_authorized_v1() == 0, "capture is disabled until host authorization");
+    wvr_audio_capture_set_authorized_v1(1);
+    require(wvr_audio_capture_is_authorized_v1() == 1, "host capture authorization is published");
+    require([session setCategory:AVAudioSessionCategoryPlayback error:&error], "legacy activation with voice chat succeeds");
+    require([session.category isEqualToString:AVAudioSessionCategoryPlayAndRecord] &&
+        (session.categoryOptions & AVAudioSessionCategoryOptionMixWithOthers), "legacy runtime preserves input and helper mixing");
+    require([session setCategory:AVAudioSessionCategoryPlayback withOptions:options error:&error], "modern runtime activation with microphone succeeds");
+    require([session.category isEqualToString:AVAudioSessionCategoryPlayAndRecord] &&
+        (session.categoryOptions & options) == options, "modern runtime preserves recording and explicit caller options");
+    wvr_audio_capture_set_authorized_v1(0);
+    require([session setCategory:AVAudioSessionCategoryPlayback error:&error], "playback restored after capture authorization cleared");
+    require([session.category isEqualToString:AVAudioSessionCategoryPlayback], "unauthorized session remains playback only");
     std::puts("AUDIO SESSION POLICY PROBE PASSED");
 } }

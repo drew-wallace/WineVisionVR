@@ -1,0 +1,223 @@
+diff --git a/src/d3d11/d3d11_texture_device.cpp b/src/d3d11/d3d11_texture_device.cpp
+--- a/src/d3d11/d3d11_texture_device.cpp
++++ b/src/d3d11/d3d11_texture_device.cpp
+@@ -25,6 +25,7 @@
+ #include "dxmt_staging.hpp"
+ #include "dxmt_texture.hpp"
+ #include "d3d11_resource.hpp"
++#include "dxgi_surface.hpp"
+ #include "util_win32_compat.h"
+ #include "util_env.hpp"
+ 
+@@ -39,6 +40,8 @@
+   float min_lod = 0.0;
+   D3DKMT_HANDLE local_kmt_ = 0;
+   D3DKMT_HANDLE global_kmt_ = 0;
++  std::unique_ptr<MTLDXGISurface<DeviceTexture>> surface_;
++  std::mutex surface_mutex_;
+ 
+   using SRVBase =
+       TResourceViewBase<tag_shader_resource_view<DeviceTexture<tag_texture>>>;
+@@ -123,6 +126,25 @@
+   };
+ 
+ public:
++  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void** out) override {
++    if (!out) return E_POINTER;
++    *out = nullptr;
++    if constexpr (tag_texture::dimension == D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
++      if (id == __uuidof(IDXGISurface) || id == __uuidof(IDXGISurface1)) {
++        if (this->desc.MipLevels != 1 || this->desc.ArraySize != 1) return E_NOINTERFACE;
++        std::lock_guard<std::mutex> lock(surface_mutex_);
++        if (!surface_) {
++          try { surface_ = std::make_unique<MTLDXGISurface<DeviceTexture>>(this); }
++          catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
++        }
++        *out = static_cast<IDXGISurface1*>(surface_.get());
++        this->AddRef();
++        return S_OK;
++      }
++    }
++    return TResourceBase<tag_texture, IMTLMinLODClampable>::QueryInterface(id, out);
++  }
++
+   DeviceTexture(const tag_texture::DESC1 *pDesc, Rc<Texture> &&u_texture, MTLD3D11Device *pDevice) :
+       TResourceBase<tag_texture, IMTLMinLODClampable>(*pDesc, pDevice) {
+         this->texture_ = std::move(u_texture);
+diff --git a/src/d3d11/meson.build b/src/d3d11/meson.build
+--- a/src/d3d11/meson.build
++++ b/src/d3d11/meson.build
+@@ -44,7 +44,8 @@
+ d3d11_dll = shared_library('d3d11', d3d11_src, d3d10_src, d3d11_res,
+   name_prefix         : '',
+   dependencies        : [ 
+-    dxgi_dep, 
++    dxgi_dep,
++    cpp.find_library('gdi32'), 
+     dxbc_parser_dep,
+     airconv_forward_dep,
+     dxmt_dep,
+diff --git a/src/dxgi/dxgi_surface.hpp b/src/dxgi/dxgi_surface.hpp
+new file mode 100644
+--- /dev/null
++++ b/src/dxgi/dxgi_surface.hpp
+@@ -0,0 +1,159 @@
++#pragma once
++#include <d3d11.h>
++#include <dxgi1_2.h>
++#include "com/com_pointer.hpp"
++#include <cstring>
++#include <limits>
++#include <mutex>
++
++namespace dxmt {
++// Aggregated surface: public references belong to the texture, preserving COM
++// identity without keeping a second owning reference to the parent resource.
++template<class Resource> class MTLDXGISurface final : public IDXGISurface1 {
++  Resource* resource_;
++  std::mutex mutex_;
++  HDC dc_ = nullptr;
++  HBITMAP bitmap_ = nullptr;
++  HGDIOBJ previous_ = nullptr;
++  void* bits_ = nullptr;
++  bool dcOutstanding_ = false;
++  bool mapped_ = false;
++
++  HRESULT objects(Com<ID3D11Texture2D>& texture, Com<ID3D11DeviceContext>& context) {
++    HRESULT hr = resource_->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&texture));
++    if (FAILED(hr)) return hr;
++    Com<ID3D11Device> device;
++    resource_->GetDevice(&device);
++    if (!device) return DXGI_ERROR_DEVICE_REMOVED;
++    device->GetImmediateContext(&context);
++    return context ? S_OK : E_FAIL;
++  }
++
++  HRESULT ensureBitmap(const D3D11_TEXTURE2D_DESC& desc) {
++    if (dc_) return S_OK;
++    if (!desc.Width || !desc.Height || desc.Width > UINT(std::numeric_limits<LONG>::max() / 4) ||
++        desc.Height > UINT(std::numeric_limits<LONG>::max()) ||
++        uint64_t(desc.Width) * desc.Height * 4 > std::numeric_limits<SIZE_T>::max()) return E_INVALIDARG;
++    HDC dc = CreateCompatibleDC(nullptr);
++    if (!dc) return E_OUTOFMEMORY;
++    BITMAPINFO info{};
++    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
++    info.bmiHeader.biWidth = LONG(desc.Width);
++    info.bmiHeader.biHeight = -LONG(desc.Height);
++    info.bmiHeader.biPlanes = 1;
++    info.bmiHeader.biBitCount = 32;
++    info.bmiHeader.biCompression = BI_RGB;
++    void* bits = nullptr;
++    HBITMAP bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
++    HGDIOBJ previous = bitmap ? SelectObject(dc, bitmap) : nullptr;
++    if (!bitmap || !bits || !previous || previous == HGDI_ERROR) {
++      if (bitmap) DeleteObject(bitmap);
++      DeleteDC(dc);
++      return E_OUTOFMEMORY;
++    }
++    dc_ = dc; bitmap_ = bitmap; previous_ = previous; bits_ = bits;
++    return S_OK;
++  }
++
++public:
++  explicit MTLDXGISurface(Resource* resource) : resource_(resource) {}
++  ~MTLDXGISurface() {
++    if (dc_) {
++      SelectObject(dc_, previous_);
++      DeleteObject(bitmap_);
++      DeleteDC(dc_);
++    }
++  }
++  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void** out) final { return resource_->QueryInterface(id, out); }
++  ULONG STDMETHODCALLTYPE AddRef() final { return resource_->AddRef(); }
++  ULONG STDMETHODCALLTYPE Release() final { return resource_->Release(); }
++  HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID id, UINT size, const void* data) final { return resource_->SetPrivateData(id, size, data); }
++  HRESULT STDMETHODCALLTYPE SetPrivateDataInterface(REFGUID id, const IUnknown* value) final { return resource_->SetPrivateDataInterface(id, value); }
++  HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID id, UINT* size, void* data) final { return resource_->GetPrivateData(id, size, data); }
++  HRESULT STDMETHODCALLTYPE GetParent(REFIID id, void** out) final { return GetDevice(id, out); }
++  HRESULT STDMETHODCALLTYPE GetDevice(REFIID id, void** out) final { return resource_->GetDeviceInterface(id, out); }
++  HRESULT STDMETHODCALLTYPE GetDesc(DXGI_SURFACE_DESC* out) final {
++    if (!out) return E_INVALIDARG;
++    D3D11_TEXTURE2D_DESC desc{}; resource_->GetDesc(&desc);
++    *out = {desc.Width, desc.Height, desc.Format, desc.SampleDesc};
++    return S_OK;
++  }
++  HRESULT STDMETHODCALLTYPE Map(DXGI_MAPPED_RECT* out, UINT flags) final {
++    if (!out) return E_INVALIDARG;
++    *out = {};
++    if (!flags || (flags & ~(DXGI_MAP_READ | DXGI_MAP_WRITE | DXGI_MAP_DISCARD)) ||
++        ((flags & DXGI_MAP_DISCARD) && (!(flags & DXGI_MAP_WRITE) || (flags & DXGI_MAP_READ)))) return E_INVALIDARG;
++    std::lock_guard<std::mutex> lock(mutex_);
++    if (dcOutstanding_ || mapped_) return DXGI_ERROR_INVALID_CALL;
++    Com<ID3D11Texture2D> texture; Com<ID3D11DeviceContext> context;
++    HRESULT hr = objects(texture, context); if (FAILED(hr)) return hr;
++    const D3D11_MAP mode = flags & DXGI_MAP_DISCARD ? D3D11_MAP_WRITE_DISCARD :
++        (flags & DXGI_MAP_READ) && (flags & DXGI_MAP_WRITE) ? D3D11_MAP_READ_WRITE :
++        flags & DXGI_MAP_READ ? D3D11_MAP_READ : D3D11_MAP_WRITE;
++    D3D11_MAPPED_SUBRESOURCE mapped{};
++    hr = context->Map(texture.ptr(), 0, mode, 0, &mapped);
++    if (FAILED(hr)) return hr;
++    out->Pitch = INT(mapped.RowPitch); out->pBits = static_cast<BYTE*>(mapped.pData);
++    mapped_ = true;
++    return S_OK;
++  }
++  HRESULT STDMETHODCALLTYPE Unmap() final {
++    std::lock_guard<std::mutex> lock(mutex_);
++    if (!mapped_) return DXGI_ERROR_INVALID_CALL;
++    Com<ID3D11Texture2D> texture; Com<ID3D11DeviceContext> context;
++    HRESULT hr = objects(texture, context); if (FAILED(hr)) return hr;
++    context->Unmap(texture.ptr(), 0); mapped_ = false;
++    return S_OK;
++  }
++  HRESULT STDMETHODCALLTYPE GetDC(BOOL discard, HDC* out) final {
++    if (!out) return E_INVALIDARG;
++    *out = nullptr;
++    std::lock_guard<std::mutex> lock(mutex_);
++    if (dcOutstanding_ || mapped_) return DXGI_ERROR_INVALID_CALL;
++    D3D11_TEXTURE2D_DESC desc{}; resource_->GetDesc(&desc);
++    if (!(desc.MiscFlags & D3D11_RESOURCE_MISC_GDI_COMPATIBLE) || desc.MipLevels != 1 || desc.ArraySize != 1 ||
++        desc.SampleDesc.Count != 1 || (desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM && desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM_SRGB))
++      return DXGI_ERROR_INVALID_CALL;
++    HRESULT hr = ensureBitmap(desc); if (FAILED(hr)) return hr;
++    Com<ID3D11Texture2D> texture; Com<ID3D11DeviceContext> context;
++    hr = objects(texture, context); if (FAILED(hr)) return hr;
++    // GetDC unbinds the output merger; callers must bind render targets again
++    // before returning to Direct3D, as required by the DXGI contract.
++    context->OMSetRenderTargets(0, nullptr, nullptr);
++    const size_t rowBytes = size_t(desc.Width) * 4;
++    if (discard) {
++      std::memset(bits_, 0, rowBytes * desc.Height);
++    } else {
++      D3D11_TEXTURE2D_DESC readDesc = desc;
++      readDesc.Usage = D3D11_USAGE_STAGING; readDesc.BindFlags = 0; readDesc.MiscFlags = 0;
++      readDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
++      Com<ID3D11Device> device; resource_->GetDevice(&device);
++      Com<ID3D11Texture2D> staging;
++      hr = device->CreateTexture2D(&readDesc, nullptr, &staging); if (FAILED(hr)) return hr;
++      context->CopyResource(staging.ptr(), texture.ptr());
++      D3D11_MAPPED_SUBRESOURCE mapped{};
++      hr = context->Map(staging.ptr(), 0, D3D11_MAP_READ, 0, &mapped); if (FAILED(hr)) return hr;
++      if (!mapped.pData || mapped.RowPitch < rowBytes) { context->Unmap(staging.ptr(), 0); return E_FAIL; }
++      for (UINT y=0; y<desc.Height; ++y)
++        std::memcpy(static_cast<BYTE*>(bits_) + y * rowBytes, static_cast<BYTE*>(mapped.pData) + size_t(y) * mapped.RowPitch, rowBytes);
++      context->Unmap(staging.ptr(), 0);
++    }
++    dcOutstanding_ = true; *out = dc_;
++    return S_OK;
++  }
++  HRESULT STDMETHODCALLTYPE ReleaseDC(RECT* dirty) final {
++    std::lock_guard<std::mutex> lock(mutex_);
++    if (!dcOutstanding_) return DXGI_ERROR_INVALID_CALL;
++    GdiFlush();
++    if (dirty && IsRectEmpty(dirty)) { dcOutstanding_ = false; return S_OK; }
++    Com<ID3D11Texture2D> texture; Com<ID3D11DeviceContext> context;
++    HRESULT hr = objects(texture, context); if (FAILED(hr)) return hr;
++    D3D11_TEXTURE2D_DESC desc{}; resource_->GetDesc(&desc);
++    // Dirty rectangles are hints, not clipping bounds. Upload the complete DIB
++    // so GetDC(FALSE) preserves pixels outside the caller's drawing operation.
++    context->UpdateSubresource(texture.ptr(), 0, nullptr, bits_, desc.Width * 4, 0);
++    dcOutstanding_ = false;
++    return S_OK;
++  }
++};
++} // namespace dxmt

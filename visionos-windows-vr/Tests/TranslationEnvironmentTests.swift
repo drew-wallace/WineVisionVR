@@ -13,7 +13,7 @@ import Foundation
   assert(String(cString: getenv("FEX_ENABLECODECACHINGWIP")) == "0")
   let key = "FEX_ENABLECODECACHINGWIP"
   let poolKey = "WVR_JIT_POOL_MIB"
-  for appID in [2868840, 632360] {
+  for appID in [2868840, 632360, 457550] {
     let defaults = WindowsVRTranslationEnvironment.compatibilityEnvironment(steamAppID: appID,
         inheritedCacheOverride: nil, inheritedJITPoolOverride: nil)
     assert(defaults[key] == "0")
@@ -31,6 +31,22 @@ import Foundation
       inheritedCacheOverride: nil, inheritedJITPoolOverride: "896").isEmpty)
   let l2Key = "FEX_DISABLEL2CACHE"
   let arenaKey = "WVR_FEX_ARENA_GIB"
+  let bigscreen = WindowsVRTranslationEnvironment.compatibilityEnvironment(steamAppID: 457550,
+      inheritedCacheOverride: nil, inheritedJITPoolOverride: nil,
+      inheritedL2CacheOverride: nil, inheritedFEXArenaOverride: nil)
+  assert(bigscreen == [key: "0", poolKey: "896", l2Key: "1", arenaKey: "32"])
+  let savedBigscreen = WindowsVRTranslationEnvironment.compatibilityEnvironment(steamAppID: 457550,
+      base: ["OPENSSL_ia32cap": "0"], inheritedCacheOverride: nil, inheritedJITPoolOverride: nil)
+  assert(savedBigscreen[key] == "0" && savedBigscreen[poolKey] == "896")
+  assert(savedBigscreen[l2Key] == "1" && savedBigscreen[arenaKey] == "32")
+  assert(savedBigscreen["OPENSSL_ia32cap"] == "0")
+  let explicitBigscreen = WindowsVRTranslationEnvironment.compatibilityEnvironment(steamAppID: 457550,
+      base: [l2Key: "0", arenaKey: "16"], inheritedCacheOverride: nil,
+      inheritedL2CacheOverride: "1", inheritedFEXArenaOverride: "32")
+  assert(explicitBigscreen[l2Key] == "0" && explicitBigscreen[arenaKey] == "16")
+  let inheritedBigscreen = WindowsVRTranslationEnvironment.compatibilityEnvironment(steamAppID: 457550,
+      inheritedCacheOverride: nil, inheritedL2CacheOverride: "0", inheritedFEXArenaOverride: "16")
+  assert(inheritedBigscreen[l2Key] == "0" && inheritedBigscreen[arenaKey] == "16")
   assert(WindowsVRTranslationEnvironment.compatibilityEnvironment(steamAppID: 632360,
       inheritedCacheOverride: nil, inheritedL2CacheOverride: nil)[l2Key] == "1")
   assert(WindowsVRTranslationEnvironment.compatibilityEnvironment(steamAppID: 632360,
@@ -57,6 +73,7 @@ import Foundation
   assert(WindowsVRTranslationEnvironment.desktopDisplayEnvironment(isDesktop: true, width: 1440, height: 1080,
       inherited: [:]) == ["MADEIRA_SCREEN_W": "1440", "MADEIRA_SCREEN_H": "1080"])
   print("PASS: measured-game code-space defaults, unrelated-game exclusion and explicit overrides")
+  print("PASS: Bigscreen arena/cache defaults, saved environments and explicit profile/process overrides")
   print("PASS: universal 1080p desktop fallback, profile size override, VR exclusion and explicit process overrides")
   print("PASS: translation defaults apply before Wine, preserve explicit overrides and enable the implemented persistent cache")
   let hid = ["MADEIRA_HIDPAD": "generic", "MADEIRA_HIDPAD_NAME": "WineVision Gamepad"]

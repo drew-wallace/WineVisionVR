@@ -857,7 +857,7 @@ private final class WindowsVRCompositorRenderer {
             if wvr_compositor_copy_stats_v1(&stats) == 0 {
                 let message = "Guest frames: submitted=\(stats.submittedFrames) acquired=\(stats.acquiredFrames) completed=\(stats.completedFrames) dropped=\(stats.droppedFrames) queued=\(stats.queuedFrames) available=\(hasFrame) acquireStatus=\(acquireStatus) | anchors: found=\(anchorFound) missing=\(anchorMissing) tracked=\(anchorTracked) head=\(lastHeadPosition) worldTracking=\(String(describing: worldTracking.state)) layer=\(String(describing: layerRenderer.state))"
                 Self.log.notice("\(message, privacy: .public)")
-                if LaunchDiagnostics.enabled { LaunchLogFile.append("compositor", message) }
+                if LaunchDiagnostics.performanceEnabled { LaunchLogFile.append("compositor", message) }
             }
         }
 
