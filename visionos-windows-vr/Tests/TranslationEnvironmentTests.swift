@@ -13,7 +13,7 @@ import Foundation
   assert(String(cString: getenv("FEX_ENABLECODECACHINGWIP")) == "0")
   let key = "FEX_ENABLECODECACHINGWIP"
   let poolKey = "WVR_JIT_POOL_MIB"
-  for appID in [2868840, 632360, 457550] {
+  for appID in [2868840, 632360, 457550, 2379780] {
     let defaults = WindowsVRTranslationEnvironment.compatibilityEnvironment(steamAppID: appID,
         inheritedCacheOverride: nil, inheritedJITPoolOverride: nil)
     assert(defaults[key] == "0")
@@ -31,6 +31,10 @@ import Foundation
       inheritedCacheOverride: nil, inheritedJITPoolOverride: "896").isEmpty)
   let l2Key = "FEX_DISABLEL2CACHE"
   let arenaKey = "WVR_FEX_ARENA_GIB"
+  let balatro = WindowsVRTranslationEnvironment.compatibilityEnvironment(steamAppID: 2379780,
+      base: ["LOVE_GRAPHICS_USE_OPENGLES": "1"], inheritedCacheOverride: nil,
+      inheritedJITPoolOverride: nil, inheritedL2CacheOverride: nil, inheritedFEXArenaOverride: nil)
+  assert(balatro == [key: "0", poolKey: "896", "LOVE_GRAPHICS_USE_OPENGLES": "1"])
   let bigscreen = WindowsVRTranslationEnvironment.compatibilityEnvironment(steamAppID: 457550,
       inheritedCacheOverride: nil, inheritedJITPoolOverride: nil,
       inheritedL2CacheOverride: nil, inheritedFEXArenaOverride: nil)

@@ -73,8 +73,10 @@ enum WindowsVRTranslationEnvironment {
         // 1 MiB game buffer; Risk of Rain 2 cannot load D3D11/DXGI once these
         // reservations fill the 640 MiB pool. Bigscreen likewise fails loading
         // its VR libraries with 416 MiB reserved at the tail and 209 MiB of
-        // images already loaded. Limit this to observed failures.
-        let needsAdditionalCodeSpace = steamAppID == 2868840 || steamAppID == 632360 || steamAppID == 457550
+        // images already loaded. Balatro reaches Steam API initialization after
+        // shader loading, then exhausts the same pool with 416 MiB reserved at
+        // the tail and 224 MiB of DLL images. Limit this to observed failures.
+        let needsAdditionalCodeSpace = steamAppID == 2868840 || steamAppID == 632360 || steamAppID == 457550 || steamAppID == 2379780
         let key = "FEX_ENABLECODECACHINGWIP"
         if needsAdditionalCodeSpace, environment[key] == nil {
             environment[key] = inheritedCacheOverride ?? "0"

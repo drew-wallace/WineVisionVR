@@ -1,5 +1,44 @@
 # Audio focus and loading investigation
 
+## November 5: Discord screenshare leaves Balatro silent
+
+The user confirmed Balatro gameplay on build 88, then reported permanent loss
+of game audio after joining a Discord screenshare. The launcher records actual
+system audio-session deactivation at 16:39:02 (`source=2`) while WineVision
+remains active. No later activation or resumption-recommendation notification
+appears in the collected log. Before that event, the native backend reports
+nonzero game samples. Evidence is in
+`.build-device/balatro-startup/discord-audio/`.
+
+The existing coordinator only resumes after an actual activation or a system
+recommendation. An explicit request to play now also recovers a previously
+interrupted session: returning to the active game scene, tapping/clicking,
+using the keyboard/controls, or sending non-neutral gamepad input can request
+activation and rebuild the existing native output. Healthy audio and ordinary
+focus changes without an observed deactivation do not reset the endpoint.
+Requests coalesce, background/stopped sessions are excluded, and a failed
+attempt does not retry on every input. The existing Controls → Reset audio
+action remains available for a later explicit retry.
+
+The observer now logs the interruption reason from the SDK's deactivation
+context in addition to its source. The host policy test and actual visionOS
+simulator notification/activation test pass; the native output reset is stubbed
+in that simulator fixture. The gamepad transport test, Release app build, and
+strict code-signature check also pass. Build 89 is saved under
+`.build-device/balatro-startup/build89/` and is installed and relaunched after
+the user confirmed they were at the menu. The user clarified that Balatro
+alone remained silent after leaving Discord and had not tried Reset audio.
+The user confirmed the physical build-89 test: after joining and leaving a
+Discord screenshare and tapping Balatro, game audio returns. Audible recovery
+for that sequence is validated by the user report. The Microsoft shader compiler, Lua runtime,
+Balatro memory settings, and game saves are unchanged by this audio change.
+
+Apple documents audio deactivation and resumption as separate notifications:
+[audio-session inactivity](https://developer.apple.com/documentation/avfaudio/avaudiosession/didbecomeinactivenotification),
+[resumption recommendations](https://developer.apple.com/documentation/avfaudio/avaudiosession/resumptionrecommendationnotification).
+
+## Earlier audio investigation
+
 The user reports intermittent headset-wide static through the built-in speakers
 in both Slay the Spire 2 and Risk of Rain 2. Closing the game window suppresses
 it; reopening can restore the distortion. Force-quitting clears it temporarily.

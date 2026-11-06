@@ -51,6 +51,35 @@ struct AudioRecoveryCoordinatorTests {
         assert(recommendation.activations == 1 && recommendation.restarts == 1,
                "A recommendation without an observed deactivation must still resume")
 
+        let missingRecommendation = Fixture()
+        await missingRecommendation.coordinator.handle(.playbackRequested)
+        assert(missingRecommendation.activations == 0 && missingRecommendation.restarts == 0,
+               "Normal game input must not restart healthy audio")
+        await missingRecommendation.coordinator.handle(.deactivated)
+        await missingRecommendation.coordinator.handle(.foreground(false))
+        await missingRecommendation.coordinator.handle(.playbackRequested)
+        assert(missingRecommendation.restarts == 0, "Background input cannot reclaim audio")
+        await missingRecommendation.coordinator.handle(.foreground(true))
+        assert(missingRecommendation.restarts == 0, "Focus alone cannot reclaim an interrupted session")
+        await missingRecommendation.coordinator.handle(.playbackRequested)
+        assert(missingRecommendation.activations == 1 && missingRecommendation.restarts == 1,
+               "Returning to the game can resume without a system recommendation")
+        await missingRecommendation.coordinator.handle(.activated)
+        await missingRecommendation.coordinator.handle(.resumptionRecommended(true))
+        await missingRecommendation.coordinator.handle(.playbackRequested)
+        assert(missingRecommendation.restarts == 1, "Late system notices and repeated input must coalesce")
+
+        let unavailable = Fixture()
+        unavailable.result = -10867
+        await unavailable.coordinator.handle(.deactivated)
+        await unavailable.coordinator.handle(.playbackRequested)
+        await unavailable.coordinator.handle(.playbackRequested)
+        assert(unavailable.activations == 1 && unavailable.restarts == 1,
+               "An unavailable endpoint must not be reset on every game input")
+        unavailable.result = 0
+        let manualRetry = await unavailable.coordinator.resetOutput(reason: "desktop control")
+        assert(manualRetry && unavailable.restarts == 2, "Explicit Reset audio remains available")
+
         let background = Fixture()
         await background.coordinator.handle(.deactivated)
         await background.coordinator.handle(.foreground(false))
@@ -119,6 +148,6 @@ struct AudioRecoveryCoordinatorTests {
         await overlap.coordinator.handle(.activated)
         assert(overlap.restarts == 2 && overlap.activations == 0,
                "An interruption during recovery must survive the earlier completion")
-        print("PASS: reactivation, recommendation order, foreground deferral, denied resumption, stopped runtime, failures, manual retry and interruption during recovery")
+        print("PASS: reactivation, missing recommendation with user playback request, input coalescing, foreground deferral, denied automatic resumption, stopped runtime, failures, manual retry and interruption during recovery")
     }
 }

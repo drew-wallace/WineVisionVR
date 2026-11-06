@@ -53,6 +53,7 @@ enum WindowsVRAudioDiagnostics {
                 // port names and other user/device identifiers are unnecessary.
                 let reason = (notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? NSNumber)?.uintValue
                 let source = (notification.userInfo?[AVAudioSession.deactivationContextKey] as? AVAudioSession.DeactivationContext)?.source.rawValue
+                let interruption = (notification.userInfo?[AVAudioSession.deactivationContextKey] as? AVAudioSession.DeactivationContext)?.interruptionContext?.reason.rawValue
                 let recommendation = (notification.userInfo?[AVAudioSession.resumptionContextKey] as? AVAudioSession.ResumptionContext)?.recommendation.rawValue
                 let transition: WindowsVRAudioRecoveryCoordinator.Event?
                 switch name {
@@ -65,7 +66,7 @@ enum WindowsVRAudioDiagnostics {
                     transition = .foreground(true)
                 default: transition = nil
                 }
-                let event = "\(label) reason=\(reason.map(String.init) ?? "-") source=\(source.map(String.init) ?? "-") resumption=\(recommendation.map(String.init) ?? "-")"
+                let event = "\(label) reason=\(reason.map(String.init) ?? "-") source=\(source.map(String.init) ?? "-") interruption=\(interruption.map(String.init) ?? "-") resumption=\(recommendation.map(String.init) ?? "-")"
                 Task { @MainActor in
                     let deliveryMS = (ProcessInfo.processInfo.systemUptime - observedUptime) * 1_000
                     snapshot("\(event) delivery-delay=\(deliveryMS)ms")
@@ -77,6 +78,11 @@ enum WindowsVRAudioDiagnostics {
 
     static func resetOutput(reason: String) async -> Bool {
         await recovery.resetOutput(reason: reason)
+    }
+
+    static func requestPlayback() {
+        guard recovery.needsPlaybackRecovery else { return }
+        Task { @MainActor in await recovery.handle(.playbackRequested) }
     }
 
     static func snapshot(_ event: String) {

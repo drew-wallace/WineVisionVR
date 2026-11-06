@@ -621,7 +621,7 @@ final class LauncherModel {
             steamAppID: appID, base: base,
             inheritedCacheOverride: WindowsVRTranslationEnvironment.inheritedCodeCacheOverride)
         if appID == 428370 { environment["OPENSSL_ia32cap"] = "0" }
-        return environment
+        return BalatroCompatibility.environment(appID: appID, base: environment)
     }
 
     /// Steam's 64-bit launch host may start a 32-bit game. Select the VR
@@ -807,6 +807,10 @@ final class LauncherModel {
             launchError = nil
             defer { isLaunching = false }
             guard runtime.isAvailable else { throw LauncherFailure.runtimePluginMissing }
+            if let selection = launchSelection, selection.game.id == BalatroCompatibility.appID {
+                try BalatroCompatibility.prepare(game: selection.game, drive: MadeiraDock.drive)
+                launchLog.notice("Balatro GC64 runtime, ANGLE renderer and Wine profile prepared before launch")
+            }
             if let selection = launchSelection, selection.game.id == 457550 {
                 try BigscreenVideoCompatibility.prepare(game: selection.game, drive: MadeiraDock.drive)
                 launchLog.notice("Bigscreen VideoToolbox streaming adapter prepared before launch")

@@ -33,6 +33,7 @@ final class WindowsDesktopGamepad {
     private let controllerDiscovery: (() -> [GCController])?
     var controllersChanged: ([String]) -> Void = { _ in }
     var diagnostic: (String) -> Void = { _ in }
+    var inputReceived: () -> Void = {}
     private var remainingInputDiagnostics = 12
     private var lastInputDiagnostic: TimeInterval = 0
 
@@ -239,10 +240,11 @@ final class WindowsDesktopGamepad {
             } else { publish(Int32(index), nil); continue }
             publish(Int32(index), state)
             let now = ProcessInfo.processInfo.systemUptime
-            if enabled, remainingInputDiagnostics > 0, now - lastInputDiagnostic >= 1,
-               state.buttons != 0 || state.left_trigger != 0 || state.right_trigger != 0 ||
+            let hasInput = state.buttons != 0 || state.left_trigger != 0 || state.right_trigger != 0 ||
                 abs(Int(state.lx)) > 8000 || abs(Int(state.ly)) > 8000 ||
-                abs(Int(state.rx)) > 8000 || abs(Int(state.ry)) > 8000 {
+                abs(Int(state.rx)) > 8000 || abs(Int(state.ry)) > 8000
+            if enabled, hasInput { inputReceived() }
+            if enabled, hasInput, remainingInputDiagnostics > 0, now - lastInputDiagnostic >= 1 {
                 remainingInputDiagnostics -= 1
                 lastInputDiagnostic = now
                 diagnostic("published input slot=\(index) buttons=\(String(state.buttons, radix: 16)) triggers=\(state.left_trigger),\(state.right_trigger) sticks=\(state.lx),\(state.ly),\(state.rx),\(state.ry)")

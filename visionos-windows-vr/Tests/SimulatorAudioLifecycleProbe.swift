@@ -55,13 +55,21 @@ struct SimulatorAudioLifecycleProbe {
         center.post(name: UIApplication.didBecomeActiveNotification, object: nil)
         try await settle()
         assert(nativeCalls.count == 2, "A focus change alone must not restart audio")
+        center.post(name: AVAudioSession.didBecomeInactiveNotification, object: session)
+        try await settle()
+        WindowsVRAudioDiagnostics.requestPlayback()
+        try await settle()
+        assert(nativeCalls.count == 3, "Game interaction resumes an interrupted session without a recommendation")
+        WindowsVRAudioDiagnostics.requestPlayback()
+        try await settle()
+        assert(nativeCalls.count == 3, "Further game interaction must not reset healthy audio")
         assert(session.intendedSpatialExperience is AVAudioSession.BypassedSpatialExperience,
                "Recovery must preserve immersive audio routing")
         state.running = false
         center.post(name: AVAudioSession.didBecomeInactiveNotification, object: session)
         center.post(name: AVAudioSession.didBecomeActiveNotification, object: session)
         try await settle()
-        assert(nativeCalls.count == 2, "A stopped runtime must not restart audio")
+        assert(nativeCalls.count == 3, "A stopped runtime must not restart audio")
         try session.setActive(false)
         print("PASS visionOS notification wiring, idempotent observers, background deferral, focus-only exclusion and stopped runtime (native output restart stubbed)")
     }

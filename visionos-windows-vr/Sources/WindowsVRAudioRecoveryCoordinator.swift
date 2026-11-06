@@ -8,6 +8,7 @@ final class WindowsVRAudioRecoveryCoordinator {
         case activated
         case resumptionRecommended(Bool)
         case foreground(Bool)
+        case playbackRequested
     }
 
     private let runtimeIsRunning: @MainActor () -> Bool
@@ -22,6 +23,8 @@ final class WindowsVRAudioRecoveryCoordinator {
     private var generation: UInt64 = 0
     private var attemptedGeneration: UInt64?
     private var inProgress = false
+
+    var needsPlaybackRecovery: Bool { pending && !inProgress && attemptedGeneration != generation }
 
     init(runtimeIsRunning: @escaping @MainActor () -> Bool,
          canRecover: @escaping @MainActor () -> Bool = { true },
@@ -52,6 +55,16 @@ final class WindowsVRAudioRecoveryCoordinator {
             if allowed { pending = runtimeIsRunning() }
         case .foreground(let foreground):
             isForeground = foreground
+        case .playbackRequested:
+            // Explicitly returning to/using the game is a new playback request.
+            // Some other apps deactivate us without ever sending a resumption
+            // recommendation. Do not leave that session permanently silent.
+            // Activation can still fail while a higher-priority call owns audio;
+            // keep manual Reset audio available rather than retrying every input.
+            guard runtimeIsRunning() else { pending = false; return }
+            guard isForeground, needsPlaybackRecovery else { return }
+            _ = await performReset(reason: "game playback requested", requestActivation: true)
+            return
         }
         await recoverIfNeeded()
     }

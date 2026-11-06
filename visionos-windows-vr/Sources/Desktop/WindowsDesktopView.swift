@@ -61,6 +61,7 @@ struct WindowsDesktopView: View {
             .onChange(of: scenePhase) { _, phase in
                 WindowsVRAudioDiagnostics.snapshot("desktop scene \(phase)")
                 controls.setActive(phase == .active)
+                if phase == .active { WindowsVRAudioDiagnostics.requestPlayback() }
                 if phase != .active { controls.releaseInput() }
             }
             .onAppear { controls.setActive(scenePhase == .active) }
@@ -211,8 +212,10 @@ final class WindowsDesktopSurface: UIView, UIKeyInput {
     private weak var controls: WindowsDesktopControls?
     private var keysHeld: Set<Int32> = []
     private var activeTouch: UITouch?
-    private var releaseButton: UInt32 = 0
     private var pointer: (Int32, Int32) = (0, 0)
+    private lazy var pointerInput = WindowsDesktopPointerInput(
+        frame: { wvr_desktop_pointer_frame_v1() },
+        send: { winios_pointer($0, $1, $2, $3) })
     private var attached = false
     private weak var presentationScene: UIWindowScene?
     private var previousWindowSize: CGSize?
@@ -257,6 +260,7 @@ final class WindowsDesktopSurface: UIView, UIKeyInput {
         isUserInteractionEnabled = true
         addInteraction(gamepadInteraction)
         gamepad.diagnostic = { LaunchLogFile.append("notice", "Gamepad: \($0)") }
+        gamepad.inputReceived = { WindowsVRAudioDiagnostics.requestPlayback() }
         steamController.diagnostic = { LaunchLogFile.append("notice", "Gamepad: \($0)") }
         steamController.stateChanged = { [weak gamepad] in gamepad?.setSteamControllerState($0) }
         gamepad.controllersChanged = { [weak controls] names in
@@ -340,11 +344,12 @@ final class WindowsDesktopSurface: UIView, UIKeyInput {
                 return
             }
             metalLayer.device = device
+            let pointerTiming = wvr_desktop_pointer_timing_install_v1()
             madeira_display_set_layer(metalLayer)
             attached = true
             _ = winios_compositor_set_hidden(0)
             didAttach?()
-            LaunchLogFile.append("desktop", "Desktop surface attached; Metal device bound, no immersive space required")
+            LaunchLogFile.append("desktop", "Desktop surface attached; Metal device bound, pointer frame timing=\(pointerTiming)")
         }
         let rect = convert(bounds, to: window)
         winios_set_desktop_rect(0, 0, 0, 0, 0)
@@ -463,22 +468,24 @@ final class WindowsDesktopSurface: UIView, UIKeyInput {
 
     @objc private func hover(_ recognizer: UIHoverGestureRecognizer) {
         guard inputEnabled, let (x, y) = map(recognizer.location(in: self)) else { return }
-        winios_pointer(x, y, 0x8001, 0) // absolute move
+        pointerInput.hover(.init(x: x, y: y))
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard inputEnabled, activeTouch == nil, let touch = touches.first,
               let (x, y) = map(touch.location(in: self)) else { return }
         activeTouch = touch
+        WindowsVRAudioDiagnostics.requestPlayback()
         let secondary = event?.buttonMask.contains(.secondary) == true
-        releaseButton = secondary ? 0x0010 : 0x0004
-        winios_pointer(x, y, 0x8001 | (secondary ? 0x0008 : 0x0002), 0)
+        // Pinch classification can overlap indirect pointing input on visionOS.
+        // Sequence every desktop button so gaze never bypasses hover priming.
+        pointerInput.begin(.init(x: x, y: y), secondary: secondary)
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard inputEnabled, let touch = activeTouch, touches.contains(touch),
               let (x, y) = map(touch.location(in: self)) else { return }
-        winios_pointer(x, y, 0x8001, 0)
+        pointerInput.move(.init(x: x, y: y))
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -487,16 +494,16 @@ final class WindowsDesktopSurface: UIView, UIKeyInput {
         releasePointer()
     }
 
-    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) { releasePointer() }
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) { releasePointer(cancelled: true) }
 
-    private func releasePointer() {
-        if releaseButton != 0 { winios_pointer(pointer.0, pointer.1, 0x8000 | releaseButton, 0) }
-        releaseButton = 0
+    private func releasePointer(cancelled: Bool = false) {
+        if cancelled { pointerInput.cancel() }
+        else { pointerInput.end(.init(x: pointer.0, y: pointer.1)) }
         activeTouch = nil
     }
 
     func releaseInput() {
-        releasePointer()
+        releasePointer(cancelled: true)
         for key in keysHeld { winios_post_key(key, 0) }
         keysHeld.removeAll()
         resignFirstResponder()
@@ -504,18 +511,22 @@ final class WindowsDesktopSurface: UIView, UIKeyInput {
 
     func pulseKey(_ vk: Int32) {
         guard inputEnabled, !keysHeld.contains(vk) else { return }
+        WindowsVRAudioDiagnostics.requestPlayback()
         winios_post_key(vk, 1)
         winios_post_key(vk, 0)
     }
 
     func rightClick() {
         guard inputEnabled, activeTouch == nil else { return }
-        winios_pointer(pointer.0, pointer.1, 0x8008, 0)
-        winios_pointer(pointer.0, pointer.1, 0x8010, 0)
+        WindowsVRAudioDiagnostics.requestPlayback()
+        let point = WindowsDesktopPointerInput.Point(x: pointer.0, y: pointer.1)
+        pointerInput.begin(point, secondary: true)
+        pointerInput.end(point)
     }
 
     func scroll(_ delta: Int32) {
         guard inputEnabled else { return }
+        WindowsVRAudioDiagnostics.requestPlayback()
         winios_pointer(pointer.0, pointer.1, 0x0800, UInt32(bitPattern: delta))
     }
 
@@ -524,7 +535,10 @@ final class WindowsDesktopSurface: UIView, UIKeyInput {
         var other: Set<UIPress> = []
         for press in presses {
             if let key = press.key, let vk = WindowsDesktopKeyboard.virtualKey(hidUsage: key.keyCode.rawValue) {
-                if keysHeld.insert(vk).inserted { winios_post_key(vk, 1) }
+                if keysHeld.insert(vk).inserted {
+                    WindowsVRAudioDiagnostics.requestPlayback()
+                    winios_post_key(vk, 1)
+                }
             } else { other.insert(press) }
         }
         // Handled hardware keys bypass UIKit's text insertion, avoiding duplicates.

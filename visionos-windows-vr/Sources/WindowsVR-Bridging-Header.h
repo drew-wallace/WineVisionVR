@@ -2,6 +2,7 @@
 #import "../../windows-vr-native/include/WindowsVRCompositorBridge.h"
 #import "../../windows-vr-native/include/WindowsVRMetalDiagnostics.h"
 #import "../../windows-vr-native/include/WindowsVRPresentationDiagnostics.h"
+#import "../../windows-vr-native/include/WindowsVRDesktopPointerTiming.h"
 #import "../../windows-vr-native/include/WindowsVRSharedResourcePorts.h"
 #import "../../windows-vr-native/include/WindowsVRVideoDecoder.h"
 #import "../../windows-vr-native/include/WindowsVRThreadDump.h"
