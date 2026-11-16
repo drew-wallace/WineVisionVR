@@ -13,7 +13,7 @@ import Foundation
   assert(String(cString: getenv("FEX_ENABLECODECACHINGWIP")) == "0")
   let key = "FEX_ENABLECODECACHINGWIP"
   let poolKey = "WVR_JIT_POOL_MIB"
-  for appID in [2868840, 632360, 457550, 2379780] {
+  for appID in [2868840, 632360, 457550, 2379780, 886250] {
     let defaults = WindowsVRTranslationEnvironment.compatibilityEnvironment(steamAppID: appID,
         inheritedCacheOverride: nil, inheritedJITPoolOverride: nil)
     assert(defaults[key] == "0")
@@ -31,6 +31,17 @@ import Foundation
       inheritedCacheOverride: nil, inheritedJITPoolOverride: "896").isEmpty)
   let l2Key = "FEX_DISABLEL2CACHE"
   let arenaKey = "WVR_FEX_ARENA_GIB"
+  let vegas = WindowsVRTranslationEnvironment.compatibilityEnvironment(steamAppID: 886250,
+      inheritedCacheOverride: nil, inheritedJITPoolOverride: nil,
+      inheritedL2CacheOverride: nil, inheritedFEXArenaOverride: nil)
+  assert(vegas == [key: "0", poolKey: "896", l2Key: "1", arenaKey: "32"])
+  let explicitVegas = WindowsVRTranslationEnvironment.compatibilityEnvironment(steamAppID: 886250,
+      base: [l2Key: "0", arenaKey: "16"], inheritedCacheOverride: nil,
+      inheritedL2CacheOverride: "1", inheritedFEXArenaOverride: "32")
+  assert(explicitVegas[l2Key] == "0" && explicitVegas[arenaKey] == "16")
+  let inheritedVegas = WindowsVRTranslationEnvironment.compatibilityEnvironment(steamAppID: 886250,
+      inheritedCacheOverride: nil, inheritedL2CacheOverride: "0", inheritedFEXArenaOverride: "16")
+  assert(inheritedVegas[l2Key] == "0" && inheritedVegas[arenaKey] == "16")
   let balatro = WindowsVRTranslationEnvironment.compatibilityEnvironment(steamAppID: 2379780,
       base: ["LOVE_GRAPHICS_USE_OPENGLES": "1"], inheritedCacheOverride: nil,
       inheritedJITPoolOverride: nil, inheritedL2CacheOverride: nil, inheritedFEXArenaOverride: nil)

@@ -4,7 +4,7 @@ from pathlib import Path
 import subprocess, tempfile
 root = Path(__file__).resolve().parents[3]
 src = root / 'visionos-windows-vr/Sources/Steam'
-files = ['SteamInstalledLibrary.swift', 'SteamOwnedGame.swift', 'SteamKeyValues.swift', 'SteamCloudClientSettings.swift', 'SteamLibraryMaintenance.swift', 'SteamCloud.swift', 'SteamGameServices.swift', 'SteamDLCStatus.swift',
+files = ['SteamInstall.swift', 'SteamInstalledLibrary.swift', 'SteamOwnedGame.swift', 'SteamKeyValues.swift', 'SteamCloudClientSettings.swift', 'SteamLibraryMaintenance.swift', 'SteamCloud.swift', 'SteamGameServices.swift', 'SteamDLCStatus.swift',
          'SwiftSteam/Library/SteamPICSMetadata.swift', 'SwiftSteam/Library/SteamAppInfo.swift', 'SwiftSteam/Library/SteamLibraryFetcher.swift',
          'SwiftSteam/Proto/SteamProtoMessages.swift', 'SwiftSteam/Core/SteamError.swift',
          'SwiftSteam/Core/SteamProtocol.swift', 'SwiftSteam/Core/SteamMessageCodec.swift',

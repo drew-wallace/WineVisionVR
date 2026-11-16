@@ -75,8 +75,10 @@ enum WindowsVRTranslationEnvironment {
         // its VR libraries with 416 MiB reserved at the tail and 209 MiB of
         // images already loaded. Balatro reaches Steam API initialization after
         // shader loading, then exhausts the same pool with 416 MiB reserved at
-        // the tail and 224 MiB of DLL images. Limit this to observed failures.
-        let needsAdditionalCodeSpace = steamAppID == 2868840 || steamAppID == 632360 || steamAppID == 457550 || steamAppID == 2379780
+        // the tail and 224 MiB of DLL images. Vegas Infinite fails loading its
+        // 198 MiB GameAssembly.dll with the same reservations in VR and desktop.
+        // Limit this to observed failures.
+        let needsAdditionalCodeSpace = steamAppID == 2868840 || steamAppID == 632360 || steamAppID == 457550 || steamAppID == 2379780 || steamAppID == 886250
         let key = "FEX_ENABLECODECACHINGWIP"
         if needsAdditionalCodeSpace, environment[key] == nil {
             environment[key] = inheritedCacheOverride ?? "0"
@@ -91,8 +93,10 @@ enum WindowsVRTranslationEnvironment {
         // Risk of Rain 2 and Bigscreen create enough translator threads to
         // exhaust the 16 GiB host arena with 50 MiB lookup tables. Bigscreen's
         // build-64 trace fails its 51st live table, then faults at 0x1000000.
+        // Vegas Infinite's build-91 run fails a 50 MiB lookup allocation with
+        // 59 live tables, then faults at the same address during Unity startup.
         // The supported L1-only layout uses 2 MiB per thread.
-        let needsAdditionalAddressSpace = steamAppID == 632360 || steamAppID == 457550
+        let needsAdditionalAddressSpace = steamAppID == 632360 || steamAppID == 457550 || steamAppID == 886250
         let l2Key = "FEX_DISABLEL2CACHE"
         if needsAdditionalAddressSpace, environment[l2Key] == nil {
             environment[l2Key] = inheritedL2CacheOverride ?? "1"

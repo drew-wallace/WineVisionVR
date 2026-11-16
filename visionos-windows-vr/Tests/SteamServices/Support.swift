@@ -7,10 +7,5 @@ struct DockGame {
 }
 enum MadeiraDock { static let drive = FileManager.default.temporaryDirectory }
 enum SteamRuntimeFiles { static let relativeRoot = "Program Files (x86)/Steam" }
-enum SteamInstallPaths {
-    static func steamApps(drive: URL) -> URL { drive.appendingPathComponent(SteamRuntimeFiles.relativeRoot + "/steamapps") }
-}
 func wine_process_is_running() -> Int { 0 }
 func wineserver_is_running() -> Int { 0 }
-
-enum SteamInstallFiles { static func safeFolderName(_ value: String) -> String { fatalError("Not used by the local-catalog tests") } }

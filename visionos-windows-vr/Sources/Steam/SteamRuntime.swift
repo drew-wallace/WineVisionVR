@@ -19,6 +19,16 @@ enum SteamRuntimeFiles {
         let sha256: String
     }
     static let origin = "https://client-update.akamai.steamstatic.com/"
+    // The headless client still needs Valve's default profile pictures. Without
+    // these files GetLargeFriendAvatar can remain pending for users with no avatar.
+    static let resourcesPackage = Package(
+        file: "resources_all.zip.c0054b3a54e3b8d249a38022ccc94ba655c55eae", bytes: 3_493_173,
+        sha256: "6679e6b4866758ccd33bcb9cbcbf47a1531c24e67c85a3005e97bddf1acf7c82")
+    static let avatarResources = [
+        "graphics/avatar_32blank.tga": "e71d96618d2afac2e3c92133b54df8822a1c199e13b775f7807ea32bf4f169db",
+        "graphics/avatar_64blank.tga": "6d983ab30ad916ed574a71aaf332f6efd100a60ad0745a734d8a4dfdb764248c",
+        "graphics/avatar_184blank.tga": "f6b006d9bbe9994c60a1b96c60e94905b1aed250f8e116cfb5b80376c75571c4",
+    ]
     static let packages = [
         Package(file: "bins_win32.zip.23e34a6d4b10596a44561a5100dac5585d2517da", bytes: 59_544_006,
                 sha256: "8b712b2a3412a9066b7725f4e1c5cef9a7ca5b187b6585a5b92d25d09df0ba62"),
@@ -82,7 +92,7 @@ enum SteamRuntimeFiles {
             throw Failure.invalidPackage
         }
         let count = u16(end + 10), central = u32(end + 16), centralSize = u32(end + 12)
-        try need(u16(end + 4) == 0 && u16(end + 6) == 0 && u16(end + 8) == count && count <= 256)
+        try need(u16(end + 4) == 0 && u16(end + 6) == 0 && u16(end + 8) == count && count <= 2048)
         try need(central <= end && centralSize == end - central)
         var cursor = central, total = 0
         var seen = Set<String>()
@@ -193,6 +203,35 @@ actor SteamRuntimeInstaller {
     static let shared = SteamRuntimeInstaller()
     private var busy = false
 
+    /// Repair legacy minimal-client installations without touching game files.
+    func ensureAvatarResources(prefix: URL) async throws {
+        guard !busy, wine_process_is_running() == 0, wineserver_is_running() == 0 else {
+            throw SteamRuntimeFiles.Failure.activeSession
+        }
+        busy = true; defer { busy = false }
+        let drive = prefix.appendingPathComponent("drive_c")
+        if try SteamRuntimeFiles.missingAvatarResources(drive: drive).isEmpty { return }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieStorage = nil; configuration.urlCredentialStorage = nil
+        configuration.timeoutIntervalForRequest = 30; configuration.timeoutIntervalForResource = 120
+        let session = URLSession(configuration: configuration, delegate: SteamRuntimeRedirects(), delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+        let package = SteamRuntimeFiles.resourcesPackage
+        let url = URL(string: SteamRuntimeFiles.origin + package.file)!
+        let (temporary, response) = try await session.download(from: url)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+              http.url?.host == url.host, http.url?.scheme == "https",
+              (try temporary.resourceValues(forKeys: [.fileSizeKey])).fileSize == package.bytes else {
+            throw SteamRuntimeFiles.Failure.invalidPackage
+        }
+        let data = try Data(contentsOf: temporary, options: .mappedIfSafe)
+        guard Self.hash(data) == package.sha256 else { throw SteamRuntimeFiles.Failure.invalidPackage }
+        try Task.checkCancellation()
+        guard wine_process_is_running() == 0, wineserver_is_running() == 0 else { throw SteamRuntimeFiles.Failure.activeSession }
+        try SteamRuntimeFiles.restoreAvatarResources(data, drive: drive)
+    }
+
     // Runs before any Wine session in this app run; no Wine/JIT run.
     func prepare(prefix: URL, progress: @Sendable (String) async -> Void) async throws {
         guard !busy, wine_process_is_running() == 0, wineserver_is_running() == 0 else {
@@ -289,5 +328,57 @@ actor SteamRuntimeInstaller {
     }
 
     private static func hash(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
+}
+#endif
+
+#if canImport(CryptoKit)
+extension SteamRuntimeFiles {
+    static func missingAvatarResources(drive: URL, expected: [String: String] = avatarResources) throws -> [String] {
+        let fm = FileManager.default
+        return try expected.keys.sorted().filter { name in
+            let target = try destination(relativeRoot + "/" + name, under: drive)
+            guard fm.fileExists(atPath: target.path) else { return true }
+            let values = try target.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            guard values.isRegularFile == true, (values.fileSize ?? Int.max) <= 1 << 20 else { throw Failure.conflict }
+            // Keep newer genuine Steam resources or user-owned files intact.
+            return false
+        }
+    }
+
+    static func restoreAvatarResources(_ archive: Data, drive: URL,
+                                       expected: [String: String] = avatarResources) throws {
+        let fm = FileManager.default
+        let missing = Set(try missingAvatarResources(drive: drive, expected: expected))
+        if missing.isEmpty { return }
+        var inputs: [String: Data] = [:]
+        try unpack(archive) { name, bytes in
+            guard missing.contains(name) else { return }
+            guard inputs[name] == nil, bytes.count <= 1 << 20,
+                  SHA256.hash(data: bytes).map({ String(format: "%02x", $0) }).joined() == expected[name] else {
+                throw Failure.invalidPackage
+            }
+            inputs[name] = bytes
+        }
+        guard Set(inputs.keys) == missing else { throw Failure.invalidPackage }
+        let root = try destination(relativeRoot, under: drive)
+        let stage = root.appendingPathComponent(".winevision-avatar-stage-" + UUID().uuidString)
+        try fm.createDirectory(at: stage, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: stage) }
+        for name in missing { try inputs[name]!.write(to: stage.appendingPathComponent(URL(fileURLWithPath: name).lastPathComponent)) }
+        var added: [URL] = []
+        do {
+            for name in missing.sorted() {
+                let target = try destination(relativeRoot + "/" + name, under: drive)
+                guard !fm.fileExists(atPath: target.path) else { throw Failure.conflict }
+                try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+                // Publish a complete file with an exclusive link; an existing destination wins.
+                try fm.linkItem(at: stage.appendingPathComponent(target.lastPathComponent), to: target)
+                added.append(target)
+            }
+        } catch {
+            for target in added { try? fm.removeItem(at: target) }
+            throw error
+        }
+    }
 }
 #endif

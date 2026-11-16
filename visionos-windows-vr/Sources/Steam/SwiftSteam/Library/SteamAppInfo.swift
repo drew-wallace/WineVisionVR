@@ -428,6 +428,13 @@ struct SteamLaunchOption: Codable, Hashable, Sendable {
     var osarch = ""
     var betaKey = ""
 
+    // The downloader installs the public Windows branch. Developer/test/Deck
+    // entries can point at the same EXE while omitting the required bootstrap.
+    var supportsPublicWindows: Bool {
+        (oslist.isEmpty || oslist.lowercased().split(separator: ",").contains("windows")) &&
+            (betaKey.isEmpty || betaKey.lowercased() == "public")
+    }
+
     /// Entries in Steam's order (numeric keys), without those that name no
     /// program or carry oversized text; at most 32.
     static func parse(_ launch: [String: Any]) -> [SteamLaunchOption] {
@@ -447,7 +454,7 @@ struct SteamLaunchOption: Codable, Hashable, Sendable {
             let config = entry["config"] as? [String: Any] ?? [:]
             guard let arguments = text(entry["arguments"], limit: 2048), let workingDir = text(entry["workingdir"], limit: 512),
                   let type = text(entry["type"]), let oslist = text(config["oslist"]), let osarch = text(config["osarch"]),
-                  let betaKey = text(config["betakey"]), let requiredDLC = text(config["ownsdlc"]) else { continue }
+                  let betaKey = text(config.first(where: { $0.key.lowercased() == "betakey" })?.value), let requiredDLC = text(config["ownsdlc"]) else { continue }
             options.append(SteamLaunchOption(executable: executable, index: index, requiredDLC: requiredDLC,
                                              arguments: arguments, workingDir: workingDir,
                                              type: type, oslist: oslist, osarch: osarch, betaKey: betaKey))

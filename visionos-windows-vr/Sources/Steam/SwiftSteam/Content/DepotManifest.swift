@@ -9,7 +9,7 @@
 import Foundation
 
 /// A parsed Steam depot manifest: the files of one depot and their chunks.
-struct DepotManifest {
+struct DepotManifest: Codable, Sendable {
     /// EDepotFileFlag.CustomExecutable: a file Valve's client customizes per user before it runs.
     static let customExecutableFlag: UInt32 = 0x80
     let depotID: UInt32
@@ -19,7 +19,7 @@ struct DepotManifest {
     var totalCompressedSize: UInt64
     var files: [FileEntry] = []
 
-    struct FileEntry {
+    struct FileEntry: Codable, Sendable {
         let filename: String
         let size: UInt64
         let flags: UInt32
@@ -28,7 +28,7 @@ struct DepotManifest {
         var isDirectory: Bool { flags & 0x40 != 0 }
     }
 
-    struct ChunkEntry {
+    struct ChunkEntry: Codable, Sendable {
         let sha: Data           // 20-byte SHA-1 hash (used as chunk ID)
         let crc: UInt32         // Adler-32 checksum of uncompressed data
         let offset: UInt64      // Offset within the file

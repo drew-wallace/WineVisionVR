@@ -488,3 +488,42 @@ automated test environment. The optional diagnostic Offline/Online reconnect
 remains off by default; Busy and Invisible handling is unchanged. The live
 friends subscription remains enabled. Hosting gameplay still requires a remote
 friend's join confirmation; local state alone is not that confirmation.
+
+### Game updates and cleanup
+
+The Steam library checks installed build IDs and selected depot manifest IDs
+against fresh product metadata, including owned DLC and shared depots. The
+Updates tab lists only locally installed games with an available update. Opening
+or refreshing that tab checks installed games without scanning the full owned
+catalog; Check for updates in a game's panel refreshes just that game. Results
+are checked against disk again before being shown, so a removed game cannot
+reappear because of a late metadata response. Offline or unavailable metadata stays marked
+Updates not checked. Install update uses the saved download queue and waits
+until the running game exits.
+
+Before downloading, the installer verifies local chunks by SHA-1 and downloads
+only missing or changed chunks. It stores a compact file/chunk inventory in
+`steamapps/winevision-manifests/<appid>.json` after successful installation, so
+later updates can also reuse chunks moved within a file. Moved data is staged
+before resizing or overwriting the original file. Existing installations without
+an inventory still reuse matching chunks at their current offsets; their first
+successful update or verification creates the inventory. Progress reports the
+remaining network download and the transfer bytes avoided through local reuse.
+
+Successful installation removes the app's download journals and staging files;
+consumed encrypted chunk files are removed after verification and writing.
+Files removed by a newer depot manifest are deleted only when the previous
+inventory identifies them and their contents still match the old chunks. Empty
+obsolete directories are removed too. Added files, saves, mods, modified files,
+and symbolic links are preserved. The inventory is retained for the next update
+and removed on uninstall. Interrupted installs keep their incomplete marker and
+reverify local data on resume before committing the new Steam install record.
+
+The installed game's panel offers Uninstall for this app's managed Steam
+library. Confirmation removes its queued or paused updates, installation folder,
+install record, inventory and download journal. Mods and saves inside the game
+folder are deleted with it; cloud saves and local saves outside that folder are
+kept. Pause an active download before uninstalling. Removal waits until no game
+session or save operation is active, rejects linked game folders, and reports
+filesystem failures so removal can be retried. The owned game remains in All
+games for downloading again.

@@ -22,6 +22,10 @@ final class SteamLibraryModel: ObservableObject {
     @Published private(set) var accountName = SteamSignIn.accountName
     @Published private(set) var games: [SteamLibraryEntry] = []
     @Published private(set) var isLoadingLibrary = false
+    @Published private(set) var isCheckingForUpdates = false
+    @Published private(set) var uninstallingAppID: Int?
+    @Published private(set) var updateStatus: [Int: SteamUpdateStatus] = [:]
+    @Published private(set) var updateCheckErrors: [Int: String] = [:]
     @Published private(set) var installedIDs: Set<Int> = []
     @Published private(set) var installedGames: [SteamLibraryEntry] = []
     @Published private(set) var loadingLaunchOptions: Set<Int> = []
@@ -73,6 +77,7 @@ final class SteamLibraryModel: ObservableObject {
     private var suspendingDownloads = 0
     private var resumeWhenDownloadsStop = false
     private var reloadLibraryWhenIdle = false
+    private var uninstallTask: Task<Void, Error>?
     private var queueAccount: String?
     private var repairDownloads: Set<Int> = []
     private var applicationIsActive = true
@@ -190,6 +195,8 @@ final class SteamLibraryModel: ObservableObject {
     func refreshInstalled() {
         let records = MadeiraDock.games(drive: MadeiraDock.drive)
         installedIDs = Set(records.filter(\.installed).map(\.id))
+        updateStatus = updateStatus.filter { installedIDs.contains($0.key) }
+        updateCheckErrors = updateCheckErrors.filter { installedIDs.contains($0.key) }
         installedMetadata = installedMetadata.filter { installedIDs.contains($0.key) }
         installedGames = SteamInstalledLibrary.games(records: records,
             metadata: games.map(\.game) + Array(installedMetadata.values)).map { SteamLibraryEntry(game: $0) }
@@ -237,6 +244,92 @@ final class SteamLibraryModel: ObservableObject {
         await connectAndLoad()
     }
 
+    /// Checking Updates never requires scanning the account's uninstalled games.
+    func checkForUpdates(appID: Int? = nil) async {
+        refreshInstalled()
+        guard signedIn, !isLoadingLibrary, !isCheckingForUpdates, !servicesBusy,
+              !runtimeBusy, !sessionReservedForLaunch, !isPreparingValveClient else { return }
+        let ids = installedIDs.filter { appID == nil || $0 == appID }.sorted()
+        guard !ids.isEmpty else { return }
+        isCheckingForUpdates = true
+        defer { isCheckingForUpdates = false; startNextDownload() }
+        let generation = accountGeneration
+        await refreshUpdates(ids, using: fetcher, refresh: true, canContinue: {
+            generation == self.accountGeneration && self.signedIn && !self.runtimeBusy && !self.sessionReservedForLaunch
+        })
+    }
+
+    private func refreshUpdates(_ ids: [Int], using loader: SteamLibraryFetcher, refresh: Bool,
+                                canContinue: () -> Bool) async {
+        for id in ids {
+            updateStatus.removeValue(forKey: id)
+            updateCheckErrors.removeValue(forKey: id)
+        }
+        await SteamLibraryMaintenance.run(ids, canContinue: canContinue, operation: { id in
+            guard self.installedIDs.contains(id) else { return }
+            guard let info = try await loader.fetchInstallInfo(appID: UInt32(id), refresh: refresh) else {
+                throw DockError.message("Steam did not return update information for this game. Try checking again.")
+            }
+            guard canContinue() else { throw CancellationError() }
+            // The game may have been removed while metadata was in flight.
+            self.refreshInstalled()
+            guard self.installedIDs.contains(id),
+                  let game = MadeiraDock.games(drive: MadeiraDock.drive).first(where: { $0.id == id }) else { return }
+            self.dlc[id] = SteamDLCStatus.inspect(info: info, owned: loader.ownedDLC, drive: MadeiraDock.drive)
+            self.updateStatus[id] = SteamUpdateStatus.inspect(info,
+                steamApps: MadeiraDock.drive.appendingPathComponent(game.library, isDirectory: true))
+        }, onFailure: { id, failure in
+            guard self.installedIDs.contains(id) else { return }
+            self.updateCheckErrors[id] = failure.localizedDescription
+        })
+    }
+
+    func canUninstall(_ id: Int) -> Bool {
+        !runtimeBusy && !servicesBusy && !isPreparingValveClient && !sessionReservedForLaunch &&
+        !isLoadingLibrary && !isCheckingForUpdates && !activeDownloads.contains(id) &&
+        MadeiraDock.games(drive: MadeiraDock.drive).contains { $0.id == id && SteamInstallPaths.isManaged(library: $0.library) }
+    }
+
+    func uninstall(_ entry: SteamLibraryEntry) async -> Bool {
+        guard canUninstall(entry.id),
+              let game = MadeiraDock.games(drive: MadeiraDock.drive).first(where: { $0.id == entry.id }) else { return false }
+        let id = entry.id
+        let generation = accountGeneration
+        servicesBusy = true
+        uninstallingAppID = id
+        // Remove queued and paused updates before touching the install on disk.
+        removeQueued(id)
+        pausedDownloads.remove(id)
+        persistDownloadQueue()
+        let steamApps = SteamInstallPaths.steamApps(drive: MadeiraDock.drive)
+        let task = Task.detached(priority: .userInitiated) {
+            try SteamInstallFiles.delete(appID: id, folderName: game.installDir, steamApps: steamApps)
+        }
+        uninstallTask = task
+        defer {
+            uninstallTask = nil
+            uninstallingAppID = nil
+            servicesBusy = false
+            refreshInstalled()
+            startNextDownload()
+        }
+        do {
+            try await task.value
+            guard generation == accountGeneration else { return true }
+            progress.removeValue(forKey: id)
+            downloadErrors.removeValue(forKey: id)
+            dlc.removeValue(forKey: id)
+            installedMetadata.removeValue(forKey: id)
+            serviceStatus.removeValue(forKey: id)
+            serviceWarnings.removeValue(forKey: id)
+            error = nil
+            return true
+        } catch {
+            if generation == accountGeneration { self.error = "Could not uninstall \(entry.game.name): \(error.localizedDescription)" }
+            return false
+        }
+    }
+
     private func signInStateChanged() async {
         persistDownloadQueue()
         accountGeneration &+= 1
@@ -263,6 +356,8 @@ final class SteamLibraryModel: ObservableObject {
         serviceWarnings = [:]
         cloudSettings = [:]
         installedMetadata = [:]
+        updateStatus = [:]
+        updateCheckErrors = [:]
         loadingLaunchOptions = []
         refreshInstalled()
         progress = [:]
@@ -280,12 +375,13 @@ final class SteamLibraryModel: ObservableObject {
     }
 
     private func connectAndLoad() async {
-        guard !servicesBusy, !sessionReservedForLaunch, !runtimeBusy, suspendingDownloads == 0 else { return }
+        guard !servicesBusy, !isCheckingForUpdates, !sessionReservedForLaunch, !runtimeBusy, suspendingDownloads == 0 else { return }
         guard !isLoadingLibrary else {
             reloadLibraryWhenIdle = true
             return
         }
         isLoadingLibrary = true
+        updateStatus = [:]
         error = nil
         defer {
             isLoadingLibrary = false
@@ -323,13 +419,7 @@ final class SteamLibraryModel: ObservableObject {
             error = nil
             SteamLog.event("[steam-library] loaded games=\(games.count) installed=\(installedIDs.count)")
             let canContinue = { generation == self.accountGeneration && !self.sessionReservedForLaunch && !self.runtimeBusy }
-            await SteamLibraryMaintenance.run(result.map { Int($0.appID) }.filter { installedIDs.contains($0) },
-                canContinue: canContinue, operation: { id in
-                    if let info = try await libraryFetcher.fetchInstallInfo(appID: UInt32(id)) {
-                        guard canContinue() else { throw CancellationError() }
-                        self.dlc[id] = SteamDLCStatus.inspect(info: info, owned: libraryFetcher.ownedDLC, drive: MadeiraDock.drive)
-                    }
-                }, onFailure: { id, failure in self.serviceWarnings[id] = failure.localizedDescription })
+            await refreshUpdates(installedIDs.sorted(), using: libraryFetcher, refresh: false, canContinue: canContinue)
             // A failed save retry stays attached to that game. The library and
             // restored download queue remain usable, including after uninstall.
             do {
@@ -359,6 +449,7 @@ final class SteamLibraryModel: ObservableObject {
     func download(_ entry: SteamLibraryEntry) {
         guard signedIn, queueAccount == SteamSignIn.accountName,
               games.contains(where: { $0.id == entry.id }), !queuedDownloads.contains(entry.id),
+              uninstallingAppID != entry.id,
               !activeDownloads.contains(entry.id) || pausedDownloads.contains(entry.id) else { return }
         let appID = entry.id
         downloadErrors.removeValue(forKey: appID)
@@ -381,7 +472,7 @@ final class SteamLibraryModel: ObservableObject {
 
     private func startNextDownload() {
         guard signedIn, !servicesBusy, !runtimeBusy, !sessionReservedForLaunch,
-              !isPreparingValveClient, !isLoadingLibrary, suspendingDownloads == 0,
+              !isPreparingValveClient, !isLoadingLibrary, !isCheckingForUpdates, suspendingDownloads == 0,
               downloadTasks.isEmpty, let appID = queuedDownloads.first,
               !waitingForForeground.contains(appID) else { return }
         queuedDownloads.removeFirst()
@@ -398,7 +489,7 @@ final class SteamLibraryModel: ObservableObject {
                 try await session.ensureConnected()
                 try Task.checkCancellation()
                 guard generation == accountGeneration else { throw CancellationError() }
-                guard let app = try await fetcher.fetchInstallInfo(appID: UInt32(appID)) else {
+                guard let app = try await fetcher.fetchInstallInfo(appID: UInt32(appID), refresh: true) else {
                     throw SteamError.depotNotFound(UInt32(appID))
                 }
                 try Task.checkCancellation()
@@ -417,6 +508,7 @@ final class SteamLibraryModel: ObservableObject {
                     }
                 guard generation == accountGeneration else { return }
                 refreshInstalled()
+                updateStatus[appID] = SteamUpdateStatus.inspect(app, steamApps: SteamInstallPaths.steamApps(drive: MadeiraDock.drive))
                 let content = SteamDLCStatus.inspect(info: app, owned: fetcher.ownedDLC, drive: MadeiraDock.drive)
                 dlc[appID] = content
                 guard content.allSatisfy(\.ready) else {
@@ -533,7 +625,7 @@ final class SteamLibraryModel: ObservableObject {
     /// that is not installed), and starting a missing program fails with Steam's "could not find
     /// the game's executable" refusal.
     nonisolated static func isInstalled(_ option: SteamLaunchOption, game: DockGame, drive: URL) -> Bool {
-        SteamInstalledExecutable.resolve(option.executable, game: game, drive: drive) != nil
+        option.supportsPublicWindows && SteamInstalledExecutable.resolve(option.executable, game: game, drive: drive) != nil
     }
 
     /// Hide metadata entries for other platforms or programs absent from this install.
@@ -824,6 +916,9 @@ final class SteamLibraryModel: ObservableObject {
     /// Wine session. Waiting downloads and the interrupted active install survive.
     func prepareForLaunch() async {
         sessionReservedForLaunch = true
+        // The launcher's already-selected game may be the one being removed.
+        // Finish removal first; its normal install validation then rejects it.
+        if let uninstallTask { _ = await uninstallTask.result }
         requeueActiveDownloads()
         await stopConnectionAndDownloads()
     }

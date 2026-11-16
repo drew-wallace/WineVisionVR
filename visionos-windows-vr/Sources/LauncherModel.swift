@@ -608,7 +608,13 @@ final class LauncherModel {
             return
         }
         let previous = options.first { $0.index == previousIndex && SteamLibraryModel.isInstalled($0, game: game, drive: MadeiraDock.drive) }
-        guard let option = previous ?? SteamLibraryModel.preferredLaunchOption(options, game: game, drive: MadeiraDock.drive),
+        // A formerly exposed private-branch entry may share the public mode's
+        // arguments but skip its bootstrap. Migrate to that public mode.
+        let former = options.first { $0.index == previousIndex }
+        let publicMode = former.flatMap { old in
+            options.first { $0.arguments == old.arguments && SteamLibraryModel.isInstalled($0, game: game, drive: MadeiraDock.drive) }
+        }
+        guard let option = previous ?? publicMode ?? SteamLibraryModel.preferredLaunchOption(options, game: game, drive: MadeiraDock.drive),
               let index = option.index else { throw DockError.message("No installed Windows launch option was found.") }
         selectSteamGame(game, launchOption: index)
     }
@@ -807,6 +813,10 @@ final class LauncherModel {
             launchError = nil
             defer { isLaunching = false }
             guard runtime.isAvailable else { throw LauncherFailure.runtimePluginMissing }
+            if launchSelection != nil {
+                try await SteamRuntimeInstaller.shared.ensureAvatarResources(prefix: MadeiraDock.prefix)
+                launchLog.notice("Steam default avatar resources verified before launch")
+            }
             if let selection = launchSelection, selection.game.id == BalatroCompatibility.appID {
                 try BalatroCompatibility.prepare(game: selection.game, drive: MadeiraDock.drive)
                 launchLog.notice("Balatro GC64 runtime, ANGLE renderer and Wine profile prepared before launch")
@@ -814,6 +824,10 @@ final class LauncherModel {
             if let selection = launchSelection, selection.game.id == 457550 {
                 try BigscreenVideoCompatibility.prepare(game: selection.game, drive: MadeiraDock.drive)
                 launchLog.notice("Bigscreen VideoToolbox streaming adapter prepared before launch")
+            }
+            if let selection = launchSelection, selection.game.id == VegasInfiniteCompatibility.appID {
+                try VegasInfiniteCompatibility.prepare(game: selection.game, drive: MadeiraDock.drive)
+                launchLog.notice("Vegas Infinite original Steam API restored; retired game-local adapter removed")
             }
             if let selection = launchSelection, selection.game.id == RiskOfRain2HealthBarRepair.appID {
                 try await RiskOfRain2HealthBarRepair.prepare(game: selection.game, drive: MadeiraDock.drive)

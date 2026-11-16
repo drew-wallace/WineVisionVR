@@ -15,19 +15,20 @@ struct SteamLibraryView: View {
     @State private var selectedDownloadIDs: [Int] = []
 
     private enum LibraryFilter: String, CaseIterable {
-        case all = "All games", installed = "Installed", downloads = "Downloads"
+        case all = "All games", installed = "Installed", updates = "Updates", downloads = "Downloads"
     }
 
     init(model: SteamLibraryModel = .shared) { self.model = model }
 
     private var visibleGames: [SteamLibraryEntry] {
-        let entries = filter == .installed ? model.installedGames : model.games
+        let entries = filter == .installed || filter == .updates ? model.installedGames : model.games
         return entries.filter { entry in
             let matchesSearch = search.isEmpty || entry.game.name.localizedCaseInsensitiveContains(search)
             let matchesFilter: Bool
             switch filter {
             case .all: matchesFilter = true
             case .installed: matchesFilter = model.installedIDs.contains(entry.id)
+            case .updates: matchesFilter = model.installedIDs.contains(entry.id) && model.updateStatus[entry.id] == .available
             case .downloads:
                 matchesFilter = model.activeDownloads.contains(entry.id) || model.queuedDownloads.contains(entry.id) || model.pausedDownloads.contains(entry.id)
                     || model.downloadErrors[entry.id] != nil
@@ -43,7 +44,7 @@ struct SteamLibraryView: View {
                     Picker("Library", selection: $filter) {
                         ForEach(LibraryFilter.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                     }.pickerStyle(.segmented)
-                    if model.isLoadingLibrary && filter != .installed { ProgressView().controlSize(.small) }
+                    if (model.isLoadingLibrary || model.isCheckingForUpdates) && filter != .installed { ProgressView().controlSize(.small) }
                 }.padding(.horizontal, 24)
                 if !model.signedIn && filter != .installed {
                     ContentUnavailableView {
@@ -82,12 +83,14 @@ struct SteamLibraryView: View {
                             }
                         }.padding(.horizontal, 24).padding(.bottom, 24)
                         if visibleGames.isEmpty {
-                            ContentUnavailableView(filter == .installed ? "No installed games" : (model.isLoadingLibrary ? "Loading library…" : "No games to show"),
+                            ContentUnavailableView(filter == .installed ? "No installed games" : (filter == .updates ? "No updates to show" : (model.isLoadingLibrary ? "Loading library…" : "No games to show")),
                                 systemImage: "square.grid.2x2", description: Text(filter == .installed
-                                    ? "Installed games appear here directly from this headset." : "Try another filter or refresh your library."))
+                                    ? "Installed games appear here directly from this headset." : (filter == .updates
+                                        ? "Only installed games with an available update appear here. Check for updates to refresh their status."
+                                        : "Try another filter or refresh your library.")))
                         }
                     }.refreshable {
-                        if filter == .installed { model.refreshInstalled() }
+                        if filter == .updates { await model.checkForUpdates() }
                         else { await model.refreshLibrary() }
                     }
                 }
@@ -116,7 +119,12 @@ struct SteamLibraryView: View {
                             selectedDownloadIDs = []
                             selectingDownloads.toggle()
                         }.disabled(!model.signedIn)
-                        Button("Refresh library", systemImage: "arrow.clockwise") { Task { await model.refreshLibrary() } }
+                        Button(filter == .updates ? "Check for updates" : "Refresh library", systemImage: "arrow.clockwise") {
+                            Task {
+                                if filter == .updates { await model.checkForUpdates() }
+                                else { await model.refreshLibrary() }
+                            }
+                        }.disabled(model.isLoadingLibrary || model.isCheckingForUpdates || model.servicesBusy || model.runtimeBusy)
                         Button(model.isPreparingValveClient ? "Preparing Valve client…" : "Prepare Valve client", systemImage: "arrow.down.circle") {
                             Task { await model.prepareValveClient() }
                         }.disabled(model.isPreparingValveClient || model.runtimeBusy)
@@ -137,6 +145,9 @@ struct SteamLibraryView: View {
                 SteamGameDownloadView(entry: entry, model: model) { selectedGame = nil; dismiss() }
             }
             .task { await model.refreshLibrary() }
+            .onChange(of: filter) { _, value in
+                if value == .updates { Task { await model.checkForUpdates() } }
+            }
         }
         .frame(width: 660, height: 640)
     }
@@ -162,12 +173,13 @@ struct SteamLibraryView: View {
         if let index = model.queuedDownloads.firstIndex(of: id) { return "Queued · \(index + 1)" }
         if model.downloadErrors[id] != nil { return "Download interrupted" }
         if model.pausedDownloads.contains(id) { return "Paused" }
-        return model.installedIDs.contains(id) ? "Installed" : "Ready to download"
+        return model.installedIDs.contains(id) ? (model.updateStatus[id] ?? .unknown).label : "Ready to download"
     }
 
     private func statusIcon(_ id: Int) -> String {
         if model.queuedDownloads.contains(id) { return "text.line.first.and.arrowtriangle.forward" }
         if model.downloadErrors[id] != nil { return "exclamationmark.circle" }
+        if model.updateStatus[id] == .available { return "arrow.triangle.2.circlepath" }
         return model.installedIDs.contains(id) ? "checkmark.circle" : "arrow.down.circle"
     }
 
@@ -185,6 +197,10 @@ struct SteamLibraryView: View {
                 }.disabled(model.isLoadingLibrary || model.runtimeBusy || model.servicesBusy)
                 Button("Dismiss", systemImage: "xmark") { model.error = nil }.labelStyle(.iconOnly)
             }.padding().background(.regularMaterial)
+        } else if let id = model.updateCheckErrors.keys.sorted().first, let warning = model.updateCheckErrors[id] {
+            let name = model.installedGames.first(where: { $0.id == id })?.game.name ?? "App \(id)"
+            Label("Could not check updates for \(name): \(warning)", systemImage: "exclamationmark.circle")
+                .font(.footnote).lineLimit(3).padding().frame(maxWidth: .infinity).background(.regularMaterial)
         } else if let id = model.serviceWarnings.keys.sorted().first, let warning = model.serviceWarnings[id] {
             let name = model.games.first(where: { $0.id == id })?.game.name ?? "App \(id)"
             Label("Library loaded. Saves for \(name) need attention: \(warning)", systemImage: "icloud.slash")
@@ -199,6 +215,7 @@ struct SteamLibraryView: View {
 private struct SteamGameDownloadView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var confirmSaveReset = false
+    @State private var confirmUninstall = false
     let entry: SteamLibraryEntry
     @ObservedObject var model: SteamLibraryModel
     let closeLibrary: () -> Void
@@ -217,10 +234,20 @@ private struct SteamGameDownloadView: View {
                     SteamGameArtwork(game: entry.game).frame(height: 210).clipped()
                         .clipShape(RoundedRectangle(cornerRadius: 20))
                     Text(entry.game.name).font(.title2.bold())
+                    if model.installedIDs.contains(entry.id) {
+                        Label((model.updateStatus[entry.id] ?? .unknown).label,
+                              systemImage: model.updateStatus[entry.id] == .available ? "arrow.triangle.2.circlepath" : "info.circle")
+                        Button(model.isLoadingLibrary || model.isCheckingForUpdates ? "Checking for updates…" : "Check for updates", systemImage: "arrow.clockwise") {
+                            Task { await model.checkForUpdates(appID: entry.id) }
+                        }.disabled(!model.signedIn || model.isLoadingLibrary || model.isCheckingForUpdates || model.runtimeBusy || model.servicesBusy)
+                        if let warning = model.updateCheckErrors[entry.id] {
+                            Text(warning).font(.caption).foregroundStyle(.orange)
+                        }
+                    }
                     VStack(alignment: .leading, spacing: 6) {
                         Label(entry.game.downloadBytes.map { "Full download: about \(bytes($0))" } ?? "Download size unavailable", systemImage: "arrow.down.circle")
                         Label(entry.game.installedBytes.map { "Installed size: about \(bytes($0))" } ?? "Installed size unavailable", systemImage: "internaldrive")
-                        Text("Estimates from Steam. Resuming or repairing may download less; installation can need extra temporary space.")
+                        Text("Updates verify and reuse existing game data, then download only missing or changed chunks. Temporary files are removed after installation.")
                             .font(.caption)
                     }.font(.callout).foregroundStyle(.secondary)
                     VStack(alignment: .leading, spacing: 10) {
@@ -252,7 +279,17 @@ private struct SteamGameDownloadView: View {
                     }.font(.callout)
                     if let progress = model.progress[entry.id] {
                         VStack(alignment: .leading, spacing: 8) {
-                            ProgressView(value: progress.fraction).tint(.cyan)
+                            if progress.phase == .preparing {
+                                ProgressView("Checking existing game files…")
+                            } else if progress.phase == .finishing {
+                                ProgressView("Finishing installation and cleaning up…")
+                            } else {
+                                ProgressView(value: progress.fraction).tint(.cyan)
+                            }
+                            if progress.reusedBytes > 0 {
+                                Text("Reused local data · avoided \(bytes(progress.reusedBytes)) of downloads")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
                             HStack {
                                 Text("\(Int(progress.fraction * 100))%")
                                 Spacer()
@@ -274,6 +311,10 @@ private struct SteamGameDownloadView: View {
                         } else if let queuePosition {
                             Label("Queued · \(queuePosition)", systemImage: "list.bullet")
                             Button("Remove from queue", systemImage: "xmark.circle") { model.removeQueued(entry.id) }
+                        } else if model.installedIDs.contains(entry.id), model.updateStatus[entry.id] == .available, !isPartial, failure == nil {
+                            Button(model.runtimeBusy || !model.activeDownloads.isEmpty ? "Queue update" : "Install update", systemImage: "arrow.triangle.2.circlepath") {
+                                model.download(entry)
+                            }.buttonStyle(.borderedProminent)
                         } else if model.installedIDs.contains(entry.id), !isPartial, failure == nil {
                             if !MadeiraDock.clientInstalled {
                                 Button(model.isPreparingValveClient ? "Preparing Valve client…" : "Prepare Valve client", systemImage: "arrow.down.circle") {
@@ -328,9 +369,18 @@ private struct SteamGameDownloadView: View {
                         }
                         Spacer(minLength: 48)
                         if !isActive, queuePosition == nil,
-                           model.installedIDs.contains(entry.id), !isPartial, failure == nil {
-                            Button(model.activeDownloads.isEmpty ? "Update / repair" : "Queue update / repair") { model.download(entry) }
+                           model.installedIDs.contains(entry.id), model.updateStatus[entry.id] != .available, !isPartial, failure == nil {
+                            Button(model.activeDownloads.isEmpty ? "Verify / repair" : "Queue verification / repair") { model.download(entry) }
                                 .buttonStyle(.bordered)
+                        }
+                    }
+                    if model.installedIDs.contains(entry.id) {
+                        Button(model.uninstallingAppID == entry.id ? "Uninstalling…" : "Uninstall", systemImage: "trash", role: .destructive) {
+                            confirmUninstall = true
+                        }.disabled(!model.canUninstall(entry.id))
+                        if isActive {
+                            Text("Pause this game's download before uninstalling.")
+                                .font(.caption).foregroundStyle(.secondary)
                         }
                     }
                     if !MadeiraDock.clientInstalled {
@@ -353,6 +403,7 @@ private struct SteamGameDownloadView: View {
                     Text("You can close this view at any time. Closing it does not delete the download.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }.padding(24)
+                    .disabled(model.uninstallingAppID != nil)
             }
             .navigationTitle("Game download")
             .toolbar {
@@ -366,6 +417,14 @@ private struct SteamGameDownloadView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This removes this game's local Steam save files and turns Upload saves and Download saves off. Cloud saves stay unchanged; this deletion will not sync to Steam. To restore them later, turn Download saves on and choose Use cloud saves.")
+        }
+        .confirmationDialog("Uninstall \(entry.game.name)?", isPresented: $confirmUninstall, titleVisibility: .visible) {
+            Button("Uninstall", role: .destructive) {
+                Task { if await model.uninstall(entry) { dismiss() } }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This deletes the game's installation folder, including mods and any saves stored inside it, and removes its queued or paused updates. Steam Cloud saves and local saves stored outside the game folder are kept. You can download the game again from your library.")
         }
         .task(id: entry.id) { await model.loadInstalledLaunchOptions(entry) }
         .frame(width: 620, height: 620)

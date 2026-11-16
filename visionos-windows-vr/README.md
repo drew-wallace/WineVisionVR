@@ -4,6 +4,10 @@ This native SwiftUI visionOS research app provides a launcher window and a `Comp
 
 After requesting debugger/JIT preparation, the app opens the immersive scene and waits up to 12 seconds for the compositor to bind its Metal device, publish stereo targets, and supply a fresh tracked head pose. It then dispatches to the embedded runtime plugin. Plugin acceptance means only that a launch request was accepted. Wine process activity is displayed separately from native compositor queue counters; neither establishes game readiness or rendered output.
 
+## App icon
+
+The layered visionOS icon uses pearl glasses with partially wine-filled lenses on a plum background. Both project specifications include `Resources/Assets.xcassets` and select `AppIcon`; the x86 and source-AIR specifications inherit it. Regenerate the artwork and circular preview with `swift windows-vr-tools/generate_app_icon.swift` from the repository root. The editable drawing lives in that script, and the preview is `docs/images/winevision-icon.png`.
+
 ## Local library and profiles
 
 The app can persist games and named per-game launch profiles in its sandbox Application Support directory (`WindowsVRLibrary/windows-vr-library-v1.json`). The app stores the validated version-1 manifest, profile fields, and a bookmark for the user-selected game folder. It does not acquire or package game files.

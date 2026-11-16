@@ -5,7 +5,7 @@ options:
     visionOS: "27.0"
 settings:
   base:
-    CURRENT_PROJECT_VERSION: "77"
+    CURRENT_PROJECT_VERSION: "95"
     MARKETING_VERSION: "0.1.0"
 packages:
   WindowsVRCore:
@@ -26,6 +26,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.avpplay.visionos-windows-vr
         PRODUCT_NAME: WineVision VR
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "7"
         XROS_DEPLOYMENT_TARGET: "27.0"
         SWIFT_VERSION: "6.0"
@@ -63,6 +64,8 @@ targets:
           - ProfileName: SpatialGamepad
     sources:
       - path: Sources
+      - path: Resources/Assets.xcassets
+        buildPhase: resources
       - path: Resources/GameCompatibility
         type: folder
         buildPhase: resources

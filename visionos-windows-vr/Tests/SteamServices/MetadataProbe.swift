@@ -85,6 +85,10 @@ func checkMetadataRefresh() async throws {
     expect(try await singleGameFetcher.fetchAppInfo(appID: 10)?.name == "Fixture")
     expect(singleGameSession.appRequests == 1 && singleGameSession.licenseRequests == 0)
     log("PASS fetching one installed game's metadata never waits for the owned-library scan")
+    expect(try await singleGameFetcher.fetchInstallInfo(appID: 10, refresh: true)?.name == "Fixture")
+    expect(singleGameSession.appRequests == 2 && singleGameSession.licenseRequests == 0)
+    log("PASS explicit update installation bypasses cached product metadata")
+
 
     let session = MetadataSteam()
     // Test a real fetcher with a single metadata-bearing response, followed by

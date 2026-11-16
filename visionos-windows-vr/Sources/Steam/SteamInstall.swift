@@ -46,16 +46,32 @@ enum SteamInstallFiles {
 
     /// Removes an app's install: its folder under `common`, its record, its
     /// resume journal and the records of the apps that own its shared depots
-    /// (those describe the same folder). Only paths strictly inside
-    /// `steamApps/common` are removed.
-    nonisolated static func delete(appID: Int, folderName: String, steamApps: URL) {
+    /// (those describe the same folder). Keep the main record until removal
+    /// succeeds so a filesystem failure remains visible and can be retried.
+    nonisolated static func delete(appID: Int, folderName: String, steamApps: URL) throws {
         let fm = FileManager.default
-        let common = steamApps.appendingPathComponent("common", isDirectory: true).resolvingSymlinksInPath().standardizedFileURL
-        let folder = common.appendingPathComponent(safeFolderName(folderName)).resolvingSymlinksInPath().standardizedFileURL
-        if folder.path.hasPrefix(common.path + "/"), folder.deletingLastPathComponent().path == common.path {
-            try? fm.removeItem(at: folder)
+        guard appID > 0, folderName == safeFolderName(folderName),
+              !folderName.contains("/"), !folderName.contains("\\") else {
+            throw CocoaError(.fileWriteInvalidFileName)
+        }
+        let root = steamApps.resolvingSymlinksInPath().standardizedFileURL
+        let common = root.appendingPathComponent("common", isDirectory: true)
+        let folder = common.appendingPathComponent(folderName, isDirectory: true)
+        let inventory = root.appendingPathComponent("winevision-manifests/\(appID).json")
+        let journal = root.appendingPathComponent("downloading/\(appID)", isDirectory: true)
+        // Reject aliases before deleting anything: following a link could
+        // remove another game's files, even when its target is in this library.
+        for url in [common, folder, inventory.deletingLastPathComponent(), journal.deletingLastPathComponent()] {
+            guard url.resolvingSymlinksInPath().standardizedFileURL.path == url.standardizedFileURL.path else {
+                throw CocoaError(.fileWriteNoPermission)
+            }
+        }
+        func removeIfPresent(_ url: URL) throws {
+            do { try fm.removeItem(at: url) }
+            catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile {}
         }
         let recordURL = steamApps.appendingPathComponent("appmanifest_\(appID).acf")
+        var ownerRecords: [URL] = []
         if let state = record(appID: appID, steamApps: steamApps) {
             for (_, owner) in (state["SharedDepots"]?.fields ?? [:]).sorted(by: { $0.key < $1.key }).prefix(64) {
                 guard let ownerID = owner.string.flatMap({ Int($0) }), ownerID > 0, ownerID != appID,
@@ -63,11 +79,14 @@ enum SteamInstallFiles {
                       let dir = ownerState["installdir"]?.string,
                       safeFolderName(dir).caseInsensitiveCompare(safeFolderName(folderName)) == .orderedSame
                 else { continue }
-                try? fm.removeItem(at: steamApps.appendingPathComponent("appmanifest_\(ownerID).acf"))
+                ownerRecords.append(steamApps.appendingPathComponent("appmanifest_\(ownerID).acf"))
             }
         }
-        try? fm.removeItem(at: recordURL)
-        try? fm.removeItem(at: steamApps.appendingPathComponent("downloading/\(appID)", isDirectory: true))
+        try removeIfPresent(folder)
+        try removeIfPresent(inventory)
+        try removeIfPresent(journal)
+        for owner in ownerRecords { try removeIfPresent(owner) }
+        try removeIfPresent(recordURL)
     }
 
     /// Validates a manifest path and folds directory spelling to the first
@@ -102,11 +121,45 @@ enum SteamInstallFiles {
 
     /// The `AppState` block of `appmanifest_<appid>.acf` when the file is
     /// readable, bounded, and names this app.
-    private static func record(appID: Int, steamApps: URL) -> SteamValue? {
+    static func record(appID: Int, steamApps: URL) -> SteamValue? {
         let url = steamApps.appendingPathComponent("appmanifest_\(appID).acf")
         guard let data = try? Data(contentsOf: url), data.count <= 1 << 20,
               var parser = try? SteamKeyValues(data), let root = try? parser.read(),
               let state = root["AppState"], state["appid"]?.string == String(appID) else { return nil }
         return state
+    }
+}
+
+/// A successful metadata refresh can distinguish an old install from an
+/// unchecked/offline game. Depot IDs also catch DLC and shared-content updates
+/// that do not change the parent game's build number.
+enum SteamUpdateStatus: Equatable, Sendable {
+    case unknown, upToDate, available
+
+    var label: String {
+        switch self {
+        case .unknown: "Updates not checked"
+        case .upToDate: "Up to date"
+        case .available: "Update available"
+        }
+    }
+
+    static func inspect(_ info: SteamAppInfo, steamApps: URL) -> Self {
+        guard let state = SteamInstallFiles.record(appID: Int(info.appID), steamApps: steamApps) else { return .unknown }
+        guard (state["StateFlags"]?.string.flatMap(UInt32.init) ?? 0) & 4 != 0 else { return .available }
+        if info.buildID > 0, state["buildid"]?.string != String(info.buildID) { return .available }
+        let selected = info.installDepots()
+        guard !selected.isEmpty else { return .unknown }
+        for depot in selected {
+            let id = String(depot.depotID)
+            var installed = state["InstalledDepots"]?[id]?["manifest"]?.string
+            if installed == nil, let owner = state["SharedDepots"]?[id]?.string.flatMap(Int.init),
+               let ownerState = SteamInstallFiles.record(appID: owner, steamApps: steamApps),
+               ownerState["installdir"]?.string == state["installdir"]?.string {
+                installed = ownerState["InstalledDepots"]?[id]?["manifest"]?.string
+            }
+            if installed != depot.publicManifestID.map(String.init) { return .available }
+        }
+        return .upToDate
     }
 }

@@ -1,0 +1,39 @@
+--- a/build/crypto-unix/crypt32_unixlib_ios.c
++++ b/build/crypto-unix/crypt32_unixlib_ios.c
+@@ -867,30 +867,14 @@
+     ios_roots_loaded = TRUE;
+ }
+ 
++/* The immutable root list is shared by all emulated processes. Native
++ * ARM64EC and WoW64 callers must each enumerate from their own cursor;
++ * consuming the list in Steam would erase the game process's trusted roots. */
++static NTSTATUS ios_enum_root_certs_wow( struct enum_root_certs_params *params );
++
+ static NTSTATUS enum_root_certs( void *args )
+ {
+-    struct enum_root_certs_params *params = args;
+-    struct list *ptr;
+-    struct root_cert *cert;
+-    NTSTATUS status = STATUS_SUCCESS;
+-
+-    pthread_mutex_lock( &ios_root_lock );
+-    ios_load_roots_locked();
+-
+-    if (!(ptr = list_head( &root_cert_list ))) status = STATUS_NO_MORE_ENTRIES;
+-    else
+-    {
+-        cert = LIST_ENTRY( ptr, struct root_cert, entry );
+-        *params->needed = cert->size;
+-        if (cert->size <= params->size)
+-        {
+-            memcpy( params->buffer, cert->data, cert->size );
+-            list_remove( &cert->entry );
+-            free( cert );
+-        }
+-    }
+-    pthread_mutex_unlock( &ios_root_lock );
+-    return status;
++    return ios_enum_root_certs_wow( args );
+ }
+ 
+ /* The WoW64 enumeration: each thread keeps its own position; the rootstore

@@ -107,10 +107,10 @@ class SteamLibraryFetcher {
     /// Fetches PICS info for a single app on demand: one token round trip and
     /// one product-info round trip, no license list. Connects the session if it
     /// sits idle-disconnected.
-    func fetchAppInfo(appID: UInt32) async throws -> SteamAppInfo? {
+    func fetchAppInfo(appID: UInt32, refresh: Bool = false) async throws -> SteamAppInfo? {
         try await session.ensureConnected()
         matchMetadataAccount()
-        if let cached = appInfoCache[appID] { return cached }
+        if !refresh, let cached = appInfoCache[appID] { return cached }
         let account = session.steamID
         let tokens = try await fetchPICSAccessTokens(appIDs: [appID])
         let info = try await fetchAppInfo(appIDs: [appID], tokens: tokens).first
@@ -124,9 +124,9 @@ class SteamLibraryFetcher {
     /// The app's metadata for an install, with the content metadata of the
     /// apps it shares depots with resolved. This never supplies depot keys or
     /// grants access: every later content request still goes to Valve.
-    func fetchInstallInfo(appID: UInt32) async throws -> SteamAppInfo? {
+    func fetchInstallInfo(appID: UInt32, refresh: Bool = false) async throws -> SteamAppInfo? {
         try Task.checkCancellation()
-        guard var app = try await fetchAppInfo(appID: appID) else { return nil }
+        guard var app = try await fetchAppInfo(appID: appID, refresh: refresh) else { return nil }
         app.ownedDLC = ownedApps
         // DLC may publish depots in its own app metadata. Mount those into
         // the parent install, while Valve still authorizes every depot key.
@@ -152,7 +152,7 @@ class SteamLibraryFetcher {
             guard references.count <= 1024 else { throw SteamFileError.invalid("Too many shared content references.") }
             if visited.insert(id).inserted {
                 guard visited.count <= 32 else { throw SteamFileError.invalid("Too many shared content dependencies.") }
-                owners[id] = try await fetchAppInfo(appID: id)
+                owners[id] = try await fetchAppInfo(appID: id, refresh: refresh)
             }
             if let source = owners[id]?.depots.first(where: { $0.depotID == depotID }),
                source.publicManifestID == nil, let next = source.fromApp {
@@ -180,7 +180,7 @@ class SteamLibraryFetcher {
             try Task.checkCancellation()
             if owners[id] == nil {
                 guard owners.count <= 64 else { break }
-                owners[id] = try await fetchAppInfo(appID: id)
+                owners[id] = try await fetchAppInfo(appID: id, refresh: refresh)
             }
             if let owner = owners[id] {
                 app.sharedOwners[id] = .init(name: owner.name, installDir: owner.installDir, buildID: owner.buildID)
